@@ -6,7 +6,7 @@ clipboard. That's all it does.
 - No window, no tray icon, no history, no files saved.
 - No network: it never connects to the internet.
 - Freezes the screen first, so menus and tooltips stay put while you pick.
-- Works over borderless fullscreen games and on every monitor, HDR included.
+- Works over fullscreen games and on every monitor, HDR included.
 
 ## Install
 
@@ -32,8 +32,11 @@ The snip goes to the clipboard only; paste it anywhere.
 
 ## Limits
 
-- Games in exclusive fullscreen may drop to the desktop while the snip screen is up;
-  borderless fullscreen is fine.
+- Windows drops a game in exclusive fullscreen to the desktop when any window opens over
+  it, Snipping Tool's too. So over such a game Win+Shift+S only takes the picture, and the
+  game keeps running; the snip screen opens with that picture once you Alt+Tab out or the
+  game closes. Pressing it again before then takes a newer picture. Borderless fullscreen
+  games get the snip screen right away.
 - On HDR screens, light brighter than SDR white is clipped.
 - The snip screen is left out of screen recordings and shares (OBS, Discord).
 

@@ -14,6 +14,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::capture::{self, Shot};
@@ -577,22 +578,75 @@ pub fn set_mode(i: usize) {
     });
 }
 
-/// Freeze the screen and put the snip screen over every monitor.
-pub fn open() {
-    if !OPEN.swap(true, Relaxed) && show().is_none() {
-        OPEN.store(false, Relaxed);
-    }
+/// A picture taken over a game in exclusive fullscreen, waiting for the game to leave the front.
+struct Pending {
+    shot: Shot,
+    windows: Vec<RECT>,
+    cursor: POINT,
 }
 
-fn show() -> Option<()> {
+thread_local! {
+    static PENDING: RefCell<Option<Pending>> = const { RefCell::new(None) };
+}
+/// Ticks every 250 ms while a picture is waiting (see `pending_tick`).
+const PENDING_TIMER: usize = 2;
+
+/// A game is in exclusive fullscreen. Windows drops such a game to the desktop the moment any
+/// window is drawn over it (Snipping Tool's too), so then nothing is shown yet.
+fn game_in_front() -> bool {
+    matches!(unsafe { SHQueryUserNotificationState() }, Ok(QUNS_RUNNING_D3D_FULL_SCREEN))
+}
+
+fn grab_now() -> Option<Pending> {
     // Freeze first, so the snip screen itself never ends up in the picture.
     let shot = capture::grab(true)?;
     let mut cursor = POINT::default();
     unsafe {
         let _ = GetCursorPos(&mut cursor);
     }
+    Some(Pending { shot, windows: visible_windows(), cursor })
+}
+
+/// Freeze the screen and put the snip screen over every monitor. Over a game in exclusive
+/// fullscreen, only take the picture: the snip screen opens with it once the game is no longer
+/// in front (Alt+Tab, or the game closes). Pressing again before then takes a newer picture.
+pub fn open() {
+    if OPEN.load(Relaxed) {
+        return;
+    }
+    if game_in_front() {
+        if let Some(p) = grab_now() {
+            PENDING.with(|s| *s.borrow_mut() = Some(p));
+            unsafe {
+                SetTimer(main_hwnd(), PENDING_TIMER, 250, Some(pending_tick));
+            }
+        }
+        return;
+    }
+    PENDING.with(|s| s.borrow_mut().take());
+    if let Some(p) = grab_now() {
+        OPEN.store(true, Relaxed);
+        if show(p).is_none() {
+            OPEN.store(false, Relaxed);
+        }
+    }
+}
+
+unsafe extern "system" fn pending_tick(hwnd: HWND, _: u32, id: usize, _: u32) {
+    if game_in_front() {
+        return;
+    }
+    let _ = KillTimer(hwnd, id);
+    let Some(p) = PENDING.with(|s| s.borrow_mut().take()) else { return };
+    if !OPEN.swap(true, Relaxed) && show(p).is_none() {
+        OPEN.store(false, Relaxed);
+    }
+}
+
+fn show(p: Pending) -> Option<()> {
+    let Pending { shot, windows, cursor } = p;
     let (x, y, w, h) = (shot.x, shot.y, shot.img.w, shot.img.h);
-    let mut o = Overlay::new(shot, visible_windows(), cursor, LAST_MODE.get())?;
+    let mut o = Overlay::new(shot, windows, cursor, LAST_MODE.get())?;
     static REGISTER: Once = Once::new();
     unsafe {
         let module = GetModuleHandleW(None).unwrap_or_default();
