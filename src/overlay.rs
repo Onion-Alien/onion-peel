@@ -83,6 +83,17 @@ fn contains(r: &RECT, p: (i32, i32)) -> bool {
     p.0 >= r.left && p.0 < r.right && p.1 >= r.top && p.1 < r.bottom
 }
 
+/// The same spot of `r` in `b` as it has in `a`, scaled.
+fn map_rect(r: RECT, a: RECT, b: RECT) -> RECT {
+    let f = |v: i32, a0: i32, a1: i32, b0: i32, b1: i32| b0 + ((v - a0) as i64 * (b1 - b0) as i64 / (a1 - a0).max(1) as i64) as i32;
+    RECT {
+        left: f(r.left, a.left, a.right, b.left, b.right),
+        top: f(r.top, a.top, a.bottom, b.top, b.bottom),
+        right: f(r.right, a.left, a.right, b.left, b.right),
+        bottom: f(r.bottom, a.top, a.bottom, b.top, b.bottom),
+    }
+}
+
 fn blit(dst: HDC, src: HDC, r: RECT) {
     unsafe {
         let _ = BitBlt(dst, r.left, r.top, r.right - r.left, r.bottom - r.top, src, r.left, r.top, SRCCOPY);
@@ -114,6 +125,11 @@ pub struct Overlay {
     last_dirty: RECT,
     /// While another window is in front: the one seen last tick, and for how many ticks.
     away: (HWND, u32),
+    /// When `shot` is stretched to the screen: the picture at the game's own resolution, and
+    /// each monitor's rectangle in `shot` and in it. Snips copy from it.
+    original: Option<(Shot, Vec<(RECT, RECT)>)>,
+    /// Where the windows and the cursor were on screen when the picture was taken.
+    taken: Option<(Vec<RECT>, POINT)>,
 }
 
 /// What the window should do after an input event.
@@ -123,6 +139,8 @@ enum Act {
     Cancel,
     /// Take a new picture: another window came to the front.
     Retake,
+    /// The screen changed size: fit the picture to it again.
+    Refit,
 }
 
 impl Overlay {
@@ -178,6 +196,8 @@ impl Overlay {
             press_pick: false,
             last_dirty: RECT::default(),
             away: (HWND::default(), 0),
+            original: None,
+            taken: None,
         };
         o.layout_bar();
         o.last_dirty = o.dirty();
@@ -246,9 +266,24 @@ impl Overlay {
         self.px(1.0).max(1)
     }
 
+    /// The picture and the part of it a snip of `r` copies: the game's own pixels when the
+    /// picture on screen is stretched.
+    fn source(&self, r: RECT) -> (&Dib, RECT) {
+        let r = intersect(r, self.shot.img.rect());
+        match &self.original {
+            None => (&self.shot.img, r),
+            Some((orig, pairs)) => {
+                let mid = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+                let (on_screen, own) = pairs.iter().find(|(n, _)| contains(n, mid)).unwrap_or(&pairs[0]);
+                (&orig.img, map_rect(intersect(r, *on_screen), *on_screen, *own))
+            }
+        }
+    }
+
     /// The "W × H" label: below the selection, or tucked inside it when there's no room.
     fn label(&self, r: RECT) -> (RECT, String) {
-        let text = format!("{} \u{00d7} {}", r.right - r.left, r.bottom - r.top);
+        let s = self.source(r).1;
+        let text = format!("{} \u{00d7} {}", s.right - s.left, s.bottom - s.top);
         let (pad, h, gap) = (self.px(8.0), self.px(24.0), self.px(8.0));
         let w = self.text_width(&text) + pad * 2;
         let mon = self.monitor_at((r.left.max(0), r.bottom.min(self.shot.img.h - 1)));
@@ -498,6 +533,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 return None;
             }
             WM_TIMER if wp.0 == AWAY_TIMER => act = o.on_tick(),
+            WM_DISPLAYCHANGE => act = Act::Refit,
             _ => return None,
         }
         Some(LRESULT(0))
@@ -507,6 +543,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         Act::Snip(r) => close(Some(r)),
         Act::Cancel => close(None),
         Act::Retake => retake(),
+        Act::Refit => refit(),
         Act::Nothing => {}
     }
     handled.unwrap_or_else(|| DefWindowProcW(hwnd, msg, wp, lp))
@@ -583,6 +620,8 @@ struct Pending {
     shot: Shot,
     windows: Vec<RECT>,
     cursor: POINT,
+    /// The window in front when it was taken: the game.
+    game: HWND,
 }
 
 thread_local! {
@@ -604,7 +643,7 @@ fn grab_now() -> Option<Pending> {
     unsafe {
         let _ = GetCursorPos(&mut cursor);
     }
-    Some(Pending { shot, windows: visible_windows(), cursor })
+    Some(Pending { shot, windows: visible_windows(), cursor, game: unsafe { GetForegroundWindow() } })
 }
 
 /// Freeze the screen and put the snip screen over every monitor. Over a game in exclusive
@@ -633,7 +672,18 @@ pub fn open() {
 }
 
 unsafe extern "system" fn pending_tick(hwnd: HWND, _: u32, id: usize, _: u32) {
-    if game_in_front() {
+    // The game has left the front once it is no longer fullscreen, or once another window has
+    // focus and Alt+Tab is let go (a DX12 game can stay "fullscreen" for seconds while minimized).
+    let game = PENDING.with(|s| s.borrow().as_ref().map(|p| p.game)).unwrap_or_default();
+    let fg = GetForegroundWindow();
+    let pid = |h| {
+        let mut p = 0;
+        GetWindowThreadProcessId(h, Some(&mut p));
+        p
+    };
+    // Another window of the game itself doesn't count.
+    let switched = !fg.is_invalid() && fg != game && pid(fg) != pid(game) && !held(VK_MENU);
+    if game_in_front() && !switched {
         return;
     }
     let _ = KillTimer(hwnd, id);
@@ -643,10 +693,36 @@ unsafe extern "system" fn pending_tick(hwnd: HWND, _: u32, id: usize, _: u32) {
     }
 }
 
+/// The snip screen for a picture. When the monitors changed size since it was taken (a game in
+/// exclusive fullscreen runs at its own resolution), the picture is shown stretched to the screen
+/// as it is now, and snips copy from the game's own pixels.
+fn build(shot: Shot, windows: Vec<RECT>, cursor: POINT, mode: Mode) -> Option<Overlay> {
+    let taken = (windows.clone(), cursor);
+    let (shot, windows, cursor, original) = match shot.fit_to_screen() {
+        Some((fit, pairs)) => {
+            let to_screen = |r: RECT| {
+                let r = RECT { left: r.left - shot.x, top: r.top - shot.y, right: r.right - shot.x, bottom: r.bottom - shot.y };
+                let mid = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+                let (on_screen, own) = pairs.iter().find(|(_, o)| contains(o, mid)).unwrap_or(&pairs[0]);
+                let n = map_rect(r, *own, *on_screen);
+                RECT { left: n.left + fit.x, top: n.top + fit.y, right: n.right + fit.x, bottom: n.bottom + fit.y }
+            };
+            let windows = windows.into_iter().map(to_screen).collect();
+            let c = to_screen(RECT { left: cursor.x, top: cursor.y, right: cursor.x, bottom: cursor.y });
+            (fit, windows, POINT { x: c.left, y: c.top }, Some((shot, pairs)))
+        }
+        None => (shot, windows, cursor, None),
+    };
+    let mut o = Overlay::new(shot, windows, cursor, mode)?;
+    o.original = original;
+    o.taken = Some(taken);
+    Some(o)
+}
+
 fn show(p: Pending) -> Option<()> {
-    let Pending { shot, windows, cursor } = p;
-    let (x, y, w, h) = (shot.x, shot.y, shot.img.w, shot.img.h);
-    let mut o = Overlay::new(shot, windows, cursor, LAST_MODE.get())?;
+    let Pending { shot, windows, cursor, .. } = p;
+    let mut o = build(shot, windows, cursor, LAST_MODE.get())?;
+    let (x, y, w, h) = (o.shot.x, o.shot.y, o.shot.img.w, o.shot.img.h);
     static REGISTER: Once = Once::new();
     unsafe {
         let module = GetModuleHandleW(None).unwrap_or_default();
@@ -679,9 +755,8 @@ fn retake() {
         let mut cursor = POINT::default();
         let _ = GetCursorPos(&mut cursor);
         let o = capture::grab(true).and_then(|shot| {
-            let (x, y, w, h) = (shot.x, shot.y, shot.img.w, shot.img.h);
-            let o = Overlay::new(shot, visible_windows(), cursor, mode)?;
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
+            let o = build(shot, visible_windows(), cursor, mode)?;
+            let _ = SetWindowPos(hwnd, HWND_TOPMOST, o.shot.x, o.shot.y, o.shot.img.w, o.shot.img.h, SWP_NOACTIVATE);
             Some(o)
         });
         if let Some(mut o) = o {
@@ -693,6 +768,43 @@ fn retake() {
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
         force_foreground(hwnd);
+    }
+}
+
+/// The screen changed size with the snip screen up (a game switching back from its own
+/// resolution, say): fit the same picture to it again.
+fn refit() {
+    let Some(mut o) = STATE.with(|s| s.borrow_mut().take()) else { return };
+    let blank = Dib::new(1, 1).map(|img| Shot { x: 0, y: 0, img, monitors: vec![RECT::default()], how: vec![] });
+    let (Some((windows, cursor)), Some(blank)) = (o.taken.take(), blank) else {
+        STATE.with(|s| *s.borrow_mut() = Some(o));
+        return;
+    };
+    let shot = match o.original.take() {
+        Some((own, _)) => own,
+        None => std::mem::replace(&mut o.shot, blank),
+    };
+    let (hwnd, mode) = (o.hwnd, o.mode);
+    if o.drag.is_some() {
+        unsafe {
+            let _ = ReleaseCapture();
+        }
+    }
+    drop(o);
+    unsafe {
+        match build(shot, windows, cursor, mode) {
+            Some(mut n) => {
+                n.hwnd = hwnd;
+                let (x, y, w, h) = (n.shot.x, n.shot.y, n.shot.img.w, n.shot.img.h);
+                STATE.with(|s| *s.borrow_mut() = Some(n));
+                let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
+                let _ = InvalidateRect(hwnd, None, false);
+            }
+            None => {
+                let _ = DestroyWindow(hwnd);
+                OPEN.store(false, Relaxed);
+            }
+        }
     }
 }
 
@@ -717,7 +829,8 @@ pub fn close(snip: Option<RECT>) {
     }
     LAST_MODE.set(o.mode);
     if let Some(r) = snip {
-        clip::copy(main_hwnd(), &o.shot.img, intersect(r, o.shot.img.rect()));
+        let (img, part) = o.source(r);
+        clip::copy(main_hwnd(), img, part);
     }
     drop(o);
     OPEN.store(false, Relaxed);

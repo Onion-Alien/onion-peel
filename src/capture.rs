@@ -78,6 +78,40 @@ pub fn grab(dxgi: bool) -> Option<Shot> {
 }
 
 impl Shot {
+    /// The picture stretched to the screen as it is now, when the monitors changed size since it
+    /// was taken (a game in exclusive fullscreen can run at its own resolution). Also returns
+    /// each monitor's rectangle in the stretched picture and in this one.
+    pub fn fit_to_screen(&self) -> Option<(Shot, Vec<(RECT, RECT)>)> {
+        let metric = |i| unsafe { GetSystemMetrics(i) };
+        let (x, y) = (metric(SM_XVIRTUALSCREEN), metric(SM_YVIRTUALSCREEN));
+        let (w, h) = (metric(SM_CXVIRTUALSCREEN).max(1), metric(SM_CYVIRTUALSCREEN).max(1));
+        // The quick check first, so a normal snip opens no slower.
+        if (x, y, w, h) == (self.x, self.y, self.img.w, self.img.h) {
+            return None;
+        }
+        let now: Vec<RECT> = outputs()
+            .into_iter()
+            .map(|(_, _, r)| RECT { left: r.left - x, top: r.top - y, right: r.right - x, bottom: r.bottom - y })
+            .collect();
+        if now.len() != self.monitors.len() {
+            return None;
+        }
+        let img = Dib::new(w, h)?;
+        unsafe {
+            SetStretchBltMode(img.dc, HALFTONE);
+            let _ = SetBrushOrgEx(img.dc, 0, 0, None);
+            for (n, o) in now.iter().zip(&self.monitors) {
+                let _ = StretchBlt(
+                    img.dc, n.left, n.top, n.right - n.left, n.bottom - n.top,
+                    self.img.dc, o.left, o.top, o.right - o.left, o.bottom - o.top,
+                    SRCCOPY,
+                );
+            }
+        }
+        let pairs = now.iter().copied().zip(self.monitors.iter().copied()).collect();
+        Some((Shot { x, y, img, monitors: now, how: self.how.clone() }, pairs))
+    }
+
     /// Copy a monitor's frame to `r`, clipped to both.
     fn paste(&mut self, r: RECT, f: &Frame) {
         let (x0, x1) = (r.left.max(0), (r.left + f.w).min(r.right).min(self.img.w));
