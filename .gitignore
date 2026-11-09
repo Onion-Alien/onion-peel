@@ -1,0 +1,28 @@
+/target/
+
+# Never publish: private scan patterns, secrets, keys
+.sensitive-patterns
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.token
+secrets.*
+credentials*.json
+
+# Never publish: working notes and local files
+HANDOFF*.md
+PLAN*.md
+TODO*.md
+*-AUDIT.md
+*.local.md
+/notes/
+/local/
+/dev-docs/
+*.log
+
+# Self-test output (capture.bmp is a real screenshot)
+*.bmp
+selftest.txt
