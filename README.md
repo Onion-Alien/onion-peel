@@ -30,8 +30,16 @@ The exe isn't code-signed yet, so Windows SmartScreen may warn the first time: c
 **More info**, then **Run anyway**. Each release lists the exe's SHA-256, so you can check
 the download with `Get-FileHash onion-peel.exe`, or build it yourself (below).
 
-To uninstall, search the Start menu for **Uninstall Onion Peel**, or use
-Settings > Apps > Installed apps. Running a newer `onion-peel.exe` updates it.
+Onion Peel starts as soon as it's installed. If you untick **Start Onion Peel when Windows
+starts**, start it yourself after a restart: search the Start menu for **Onion Peel**.
+**Uninstall Onion Peel** is right there too (or use Settings > Apps > Installed apps).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/start-menu-dark.png">
+  <img src="docs/start-menu-light.png" width="560" alt="Windows Start menu search for 'onion peel': Onion Peel as the best match, and Uninstall Onion Peel under Apps">
+</picture>
+
+Running a newer `onion-peel.exe` updates it.
 
 ## Use
 
