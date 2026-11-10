@@ -27,11 +27,21 @@ pub static OPEN: AtomicBool = AtomicBool::new(false);
 const CLASS: PCWSTR = w!("OnionPeelOverlay");
 /// Ticks every 50 ms while another window is in front (see `on_tick`).
 const AWAY_TIMER: usize = 1;
+/// From the mouse hook while the Alt+Tab switcher is up: a drag started at (x, y) on screen.
+const WM_SWITCHER_DRAG: u32 = WM_APP + 0x40;
+/// From the mouse hook: a click with no drag, to hand on to the switcher.
+const WM_SWITCHER_CLICK: u32 = WM_APP + 0x41;
+/// Marks the clicks we hand on ourselves.
+const OURS: usize = 0x4f50;
 
 thread_local! {
     static STATE: RefCell<Option<Overlay>> = const { RefCell::new(None) };
     /// Opens in the mode used last time, like Snipping Tool.
     static LAST_MODE: Cell<Mode> = const { Cell::new(Mode::Rect) };
+    /// The mouse hook, only while the snip screen is open and the Alt+Tab switcher is in front.
+    static MOUSE: Cell<Option<(HHOOK, HWND)>> = const { Cell::new(None) };
+    /// Where the left button went down over the switcher (swallowed until we know what it is).
+    static PRESS: Cell<Option<POINT>> = const { Cell::new(None) };
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -141,6 +151,8 @@ enum Act {
     Retake,
     /// The screen changed size: fit the picture to it again.
     Refit,
+    /// A drag started over the Alt+Tab switcher, here on screen.
+    SwitcherDrag(POINT),
 }
 
 impl Overlay {
@@ -472,6 +484,8 @@ impl Overlay {
     /// is over and it has drawn itself, take a new picture of it.
     fn on_tick(&mut self) -> Act {
         let fg = unsafe { GetForegroundWindow() };
+        // The switcher takes every click while it's up, so watch the mouse ourselves meanwhile.
+        mouse_hook((held(VK_MENU) && is_switcher(fg)).then_some(self.hwnd));
         if held(VK_MENU) || fg == self.hwnd || fg != self.away.0 {
             self.away = (fg, 0);
             return Act::Nothing;
@@ -529,11 +543,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     SetTimer(hwnd, AWAY_TIMER, 50, None);
                 } else {
                     let _ = KillTimer(hwnd, AWAY_TIMER);
+                    mouse_hook(None);
                 }
                 return None;
             }
             WM_TIMER if wp.0 == AWAY_TIMER => act = o.on_tick(),
             WM_DISPLAYCHANGE => act = Act::Refit,
+            WM_SWITCHER_DRAG => act = Act::SwitcherDrag(POINT { x: wp.0 as i32, y: lp.0 as i32 }),
+            WM_SWITCHER_CLICK => replay_click(),
             _ => return None,
         }
         Some(LRESULT(0))
@@ -544,6 +561,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         Act::Cancel => close(None),
         Act::Retake => retake(),
         Act::Refit => refit(),
+        Act::SwitcherDrag(p) => switcher_drag(p),
         Act::Nothing => {}
     }
     handled.unwrap_or_else(|| DefWindowProcW(hwnd, msg, wp, lp))
@@ -823,6 +841,7 @@ unsafe fn force_foreground(hwnd: HWND) {
 
 /// Close the snip screen; with a rectangle, copy that part to the clipboard first.
 pub fn close(snip: Option<RECT>) {
+    mouse_hook(None);
     let Some(o) = STATE.with(|s| s.borrow_mut().take()) else { return };
     unsafe {
         let _ = DestroyWindow(o.hwnd);
@@ -834,4 +853,124 @@ pub fn close(snip: Option<RECT>) {
     }
     drop(o);
     OPEN.store(false, Relaxed);
+}
+
+// ---- snipping the Alt+Tab switcher ----
+// With the snip screen open, Alt+Tab lets you change what's on screen. The switcher itself covers
+// the whole screen and takes every click while Alt is held, so to snip it, a mouse hook watches
+// for a drag over it: the picture is retaken with the switcher in it, the switcher is closed and
+// the drag carries on in the snip screen. A plain click still goes to the switcher.
+
+/// The Alt+Tab switcher (Windows 11, then 10).
+fn is_switcher(h: HWND) -> bool {
+    let mut class = [0u16; 64];
+    let n = unsafe { GetClassNameW(h, &mut class) } as usize;
+    matches!(String::from_utf16_lossy(&class[..n]).as_str(), "XamlExplorerHostIslandWindow" | "MultitaskingViewFrame" | "TaskSwitcherWnd")
+}
+
+/// Watch the mouse for `overlay`, or stop watching.
+fn mouse_hook(overlay: Option<HWND>) {
+    match (MOUSE.get(), overlay) {
+        (None, Some(hwnd)) => unsafe {
+            PRESS.set(None);
+            if let Ok(h) = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), HINSTANCE::default(), 0) {
+                MOUSE.set(Some((h, hwnd)));
+            }
+        },
+        (Some((h, _)), None) => unsafe {
+            let _ = UnhookWindowsHookEx(h);
+            MOUSE.set(None);
+            // A press we swallowed and never handed on: hand it on now.
+            if PRESS.take().is_some() {
+                replay_click();
+            }
+        },
+        _ => {}
+    }
+}
+
+/// Runs on this thread (from inside its message loop), so it only posts to the snip screen.
+unsafe extern "system" fn mouse_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let m = &*(lp.0 as *const MSLLHOOKSTRUCT);
+    if code == HC_ACTION as i32 && m.flags & LLMHF_INJECTED == 0 {
+        if let Some((_, hwnd)) = MOUSE.get() {
+            match wp.0 as u32 {
+                WM_LBUTTONDOWN => {
+                    PRESS.set(Some(m.pt));
+                    return LRESULT(1);
+                }
+                WM_MOUSEMOVE => {
+                    if let Some(p) = PRESS.get() {
+                        if (m.pt.x - p.x).abs() > 4 || (m.pt.y - p.y).abs() > 4 {
+                            PRESS.set(None);
+                            let _ = PostMessageW(hwnd, WM_SWITCHER_DRAG, WPARAM(p.x as isize as usize), LPARAM(p.y as isize));
+                        }
+                    }
+                }
+                WM_LBUTTONUP if PRESS.take().is_some() => {
+                    let _ = PostMessageW(hwnd, WM_SWITCHER_CLICK, WPARAM(0), LPARAM(0));
+                    return LRESULT(1);
+                }
+                _ => {}
+            }
+        }
+    }
+    CallNextHookEx(HHOOK::default(), code, wp, lp)
+}
+
+/// Hand a swallowed click on to whatever is under the mouse (the switcher).
+fn replay_click() {
+    let button = |flags| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: flags, dwExtraInfo: OURS, ..Default::default() } },
+    };
+    unsafe {
+        SendInput(&[button(MOUSEEVENTF_LEFTDOWN), button(MOUSEEVENTF_LEFTUP)], size_of::<INPUT>() as i32);
+    }
+}
+
+/// A drag started over the switcher at `start`: picture it, close it, carry on dragging.
+fn switcher_drag(start: POINT) {
+    mouse_hook(None);
+    let Some((hwnd, mode)) = STATE.with(|s| s.borrow().as_ref().map(|o| (o.hwnd, o.mode))) else { return };
+    unsafe {
+        let switcher = GetForegroundWindow();
+        // Windows older than 10 (2004) can't leave the snip screen out of captures: hide it meanwhile.
+        let mut affinity = 0;
+        let hide = GetWindowDisplayAffinity(hwnd, &mut affinity).is_err() || affinity != WDA_EXCLUDEFROMCAPTURE.0;
+        if hide {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        let shot = capture::grab(true);
+        let mut windows = visible_windows();
+        // The switcher's own window is see-through and covers the whole screen: not one to pick.
+        if let Some(r) = pickable(switcher) {
+            windows.retain(|w| *w != r);
+        }
+        // Esc closes the switcher without switching, so the snip screen comes back to the front.
+        let key = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_ESCAPE, dwFlags: flags, dwExtraInfo: OURS, ..Default::default() } },
+        };
+        SendInput(&[key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)], size_of::<INPUT>() as i32);
+        let mut cursor = POINT::default();
+        let _ = GetCursorPos(&mut cursor);
+        if let Some(mut o) = shot.and_then(|shot| build(shot, windows, cursor, mode)) {
+            o.hwnd = hwnd;
+            let _ = SetWindowPos(hwnd, HWND_TOPMOST, o.shot.x, o.shot.y, o.shot.img.w, o.shot.img.h, SWP_NOACTIVATE);
+            STATE.with(|s| *s.borrow_mut() = Some(o));
+            let _ = InvalidateRect(hwnd, None, false);
+        }
+        if hide {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        force_foreground(hwnd);
+        STATE.with(|s| {
+            if let Some(o) = s.borrow_mut().as_mut() {
+                let (x, y) = (o.shot.x, o.shot.y);
+                o.on_down((start.x - x, start.y - y));
+                o.on_move((cursor.x - x, cursor.y - y));
+            }
+        });
+    }
 }
