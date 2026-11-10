@@ -8,6 +8,13 @@ clipboard. That's all it does.
 - Freezes the screen first, so menus and tooltips stay put while you pick.
 - Works over fullscreen games and on every monitor, HDR included.
 
+## Why
+
+Reason for creating this:
+
+- The Windows Snipping Tool has bad reliability.
+- Similar tools were too bulky or had network/history built in.
+
 ## Install
 
 <picture>
