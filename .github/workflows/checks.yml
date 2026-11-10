@@ -21,7 +21,12 @@ jobs:
 
       - name: Commit times in UTC
         shell: bash
-        run: sh scripts/checks/check_utc.sh HEAD
+        # The PR's own head, not the merge commit GitHub makes to test it (that one is
+        # stamped in the account's time zone, which is also why PRs here are never merged
+        # with GitHub's merge button: main is fast-forwarded instead).
+        run: sh scripts/checks/check_utc.sh "$HEAD"
+        env:
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Toolchain
         run: rustup component add clippy
