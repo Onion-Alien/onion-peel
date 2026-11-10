@@ -48,7 +48,7 @@ pub fn run(dir: &str) {
         let (mut differ, mut lit, mut total, mut n) = (0, 0, 0, 0);
         for y in m.top..m.bottom {
             let w = m.right - m.left;
-            for (a, b) in shot.img.row(m.left, y, w).chunks_exact(4).zip(gdi.img.row(m.left, y, w).chunks_exact(4)) {
+            for (a, b) in shot.img.row(m.left, y, w).as_chunks::<4>().0.iter().zip(gdi.img.row(m.left, y, w).as_chunks::<4>().0.iter()) {
                 let most = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
                 differ += (most > 8) as u64;
                 total += most as u64;
@@ -67,9 +67,9 @@ pub fn run(dir: &str) {
     let r = RECT { left: m0.left + 10, top: m0.top + 20, right: m0.left + 110, bottom: m0.top + 70 };
     let mut packed = vec![0u8; 300 * 50];
     clip::pack(&shot.img, r, &mut packed);
-    let pack_ok = packed.chunks_exact(300).enumerate().all(|(i, row)| {
+    let pack_ok = packed.as_chunks::<300>().0.iter().enumerate().all(|(i, row)| {
         let src = shot.img.row(r.left, r.bottom - 1 - i as i32, 100);
-        row.chunks_exact(3).zip(src.chunks_exact(4)).all(|(d, s)| d == &s[..3])
+        row.as_chunks::<3>().0.iter().zip(src.as_chunks::<4>().0.iter()).all(|(d, s)| d == &s[..3])
     });
     writeln!(log, "pack ok: {pack_ok}").unwrap();
 
@@ -79,7 +79,7 @@ pub fn run(dir: &str) {
 
     // Fixed picture and windows from here on (screen coordinates for the windows).
     let w = shot.img.w as usize;
-    for (i, p) in shot.img.pixels_mut().chunks_exact_mut(4).enumerate() {
+    for (i, p) in shot.img.pixels_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let (x, y) = (i % w, i / w);
         p.copy_from_slice(&[x as u8, y as u8, ((x + y) >> 3) as u8, 255]);
     }
@@ -134,7 +134,8 @@ fn dialogs(dir: &str, log: &mut String) {
                    because it is being used by another process. (os error 32)";
         Page::finished(Kind::Failed, "Couldn't install Onion Peel", why)
     };
-    let pages: [(&str, &dyn Fn() -> Page, Option<Hit>, Option<Hit>); 10] = [
+    type Case<'a> = (&'a str, &'a dyn Fn() -> Page, Option<Hit>, Option<Hit>);
+    let pages: [Case; 10] = [
         ("install", &|| Page::install_as(false, true), None, None),
         ("install-hover", &|| Page::install_as(false, true), Some(Hit::Button(0)), None),
         ("install-unticked-hover", &|| Page::install_as(false, false), Some(Hit::Check), None),

@@ -18,7 +18,7 @@ fn stride(w: i32) -> usize {
 pub fn pack(img: &Dib, r: RECT, out: &mut [u8]) {
     let w = r.right - r.left;
     for (row, y) in out.chunks_exact_mut(stride(w)).zip((r.top..r.bottom).rev()) {
-        for (d, s) in row.chunks_exact_mut(3).zip(img.row(r.left, y, w).chunks_exact(4)) {
+        for (d, s) in row.as_chunks_mut::<3>().0.iter_mut().zip(img.row(r.left, y, w).as_chunks::<4>().0.iter()) {
             d.copy_from_slice(&s[..3]);
         }
     }
@@ -58,5 +58,37 @@ pub fn copy(owner: HWND, img: &Dib, r: RECT) {
             // The clipboard only takes ownership of the memory when SetClipboardData works.
             let _ = GlobalFree(mem);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_are_padded_to_4_bytes() {
+        assert_eq!([1, 2, 3, 4, 5, 100].map(stride), [4, 8, 12, 12, 16, 300]);
+    }
+
+    #[test]
+    fn pack_is_bottom_up_bgr() {
+        // A 4x3 picture where each pixel's bytes say where it is: B = x, G = y, R = 7, A = 255.
+        let mut img = Dib::new(4, 3).unwrap();
+        for (i, px) in img.pixels_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            px.copy_from_slice(&[(i % 4) as u8, (i / 4) as u8, 7, 255]);
+        }
+        // The 3x2 box at (1, 1): rows y = 2 then y = 1, 3 bytes per pixel, padded to 12.
+        let mut out = vec![0xAA; stride(3) * 2];
+        pack(&img, RECT { left: 1, top: 1, right: 4, bottom: 3 }, &mut out);
+        let want = |y: u8| [1, y, 7, 2, y, 7, 3, y, 7, 0xAA, 0xAA, 0xAA];
+        assert_eq!(&out[..12], &want(2));
+        assert_eq!(&out[12..], &want(1));
+    }
+
+    #[test]
+    fn header_is_plain_rgb() {
+        let h = dib::header(5, -3, 24);
+        assert_eq!((h.biSize, h.biWidth, h.biHeight, h.biPlanes, h.biBitCount), (40, 5, -3, 1, 24));
+        assert_eq!(h.biCompression, 0); // BI_RGB
     }
 }

@@ -256,7 +256,7 @@ unsafe fn read(ctx: &ID3D11DeviceContext, tex: &ID3D11Texture2D, white: f32) -> 
     if fp16 {
         let lut = srgb_table(white);
         for line in src.chunks(pitch) {
-            for p in line[..row].chunks_exact(8) {
+            for p in line[..row].as_chunks::<8>().0.iter() {
                 let c = |i: usize| lut[u16::from_le_bytes([p[i], p[i + 1]]) as usize];
                 px.extend_from_slice(&[c(4), c(2), c(0), 255]); // RGBA halves to BGRA bytes
             }
@@ -268,7 +268,7 @@ unsafe fn read(ctx: &ID3D11DeviceContext, tex: &ID3D11Texture2D, white: f32) -> 
     }
     ctx.Unmap(tex, 0);
     // A fully black frame usually means duplication didn't really see the screen.
-    if px.chunks_exact(4).all(|p| p[..3] == [0, 0, 0]) {
+    if px.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0]) {
         return Err("all black".into());
     }
     Ok(Frame { w: w as i32, h: h as i32, px, white: fp16.then_some(white) })

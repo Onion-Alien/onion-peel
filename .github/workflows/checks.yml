@@ -1,0 +1,41 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the privacy checks read the whole history
+
+      - name: No secrets or personal data, in the files and the history
+        run: python scripts/check_sensitive.py --history
+
+      - name: Commit times in UTC
+        shell: bash
+        run: sh scripts/checks/check_utc.sh HEAD
+
+      - name: Toolchain
+        run: rustup component add clippy
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Tests
+        run: cargo test
+
+      - name: Clippy
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --features selftest -- -D warnings
+
+      - name: Self-test build
+        run: cargo build --release --features selftest

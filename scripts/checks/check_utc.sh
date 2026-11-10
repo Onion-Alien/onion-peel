@@ -3,7 +3,7 @@
 # (+0000), and fails if there are any. Commit times carry the committer's time zone,
 # and this repo keeps them all in UTC (see CONTRIBUTING.md, "Commit times").
 #   sh scripts/checks/check_utc.sh <rev-list args>     e.g.  origin/main..HEAD
-# Used by .githooks/pre-push, scripts/merge_pr.sh and CI.
+# Used by .githooks/pre-push and CI (.github/workflows/checks.yml).
 [ $# -gt 0 ] || { echo "usage: sh scripts/checks/check_utc.sh <range>" >&2; exit 2; }
 bad=$(git log --format='%h %ad|%cd %s' --date=raw "$@" |
       grep -v '^[0-9a-f]* [0-9]* +0000|[0-9]* +0000 ')
