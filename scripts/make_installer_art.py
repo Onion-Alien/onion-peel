@@ -9,7 +9,7 @@ outputs are build files in target/installer, not committed):
 The bar, the dimming, the frame and the size label copy src/overlay.rs (its colours,
 radii and Segoe UI), shrunk to fit. Nothing here is a real screenshot.
 
-    python scripts/make_installer_art.py
+    python scripts/make_installer_art.py [--site]
 Needs Pillow (pip install pillow).
 """
 from __future__ import annotations
@@ -120,6 +120,11 @@ def draw(theme: str, pct: int) -> Image.Image:
 
 
 def main() -> int:
+    if "--site" in sys.argv[1:]:
+        pic = ROOT / "docs" / "snip-dark.png"
+        draw("dark", 420).save(pic, optimize=True)
+        print(f"wrote {pic.relative_to(ROOT)}")
+        return 0
     OUT.mkdir(parents=True, exist_ok=True)
     for theme in THEMES:
         for pct in SCALES:

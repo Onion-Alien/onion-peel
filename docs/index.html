@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onion Peel: snip your screen, nothing else (free, Windows)</title>
+<meta name="description" content="Press Win+Shift+S, pick an area, and it's on the clipboard. A free, open source snipping tool for Windows 10 and 11: no window, no tray icon, no files saved, never goes online.">
+<link rel="canonical" href="https://onionalien.com/onionpeel/">
+<meta property="og:title" content="Onion Peel">
+<meta property="og:description" content="Peel a piece off your screen. Free and open source for Windows.">
+<meta property="og:image" content="https://onionalien.com/onionpeel/snip-dark.png">
+<link rel="icon" type="image/png" href="icon.png">
+<style>
+  :root {
+    --bg: #0b0b12; --card: rgba(255, 255, 255, .035); --edge: rgba(255, 255, 255, .08);
+    --edge-ctl: rgba(255, 255, 255, .34);
+    --text: #f1f0f7; --muted: #a6a5ba; --link: #8fd0ff; --a1: #2f8fe6;
+    --display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --body: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    --grad: linear-gradient(135deg, #1f7fd8, #2f98ec 55%, #3fb6e8);
+    --gloss: linear-gradient(180deg, rgba(255,255,255,.36), rgba(255,255,255,.1) 38%, rgba(255,255,255,0) 47%, rgba(0,0,0,.08));
+    --glass: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.015));
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 var(--body);
+         background-image: radial-gradient(900px 500px at 85% -10%, rgba(47, 143, 230, .2), transparent 70%),
+                           radial-gradient(700px 420px at -10% 30%, rgba(63, 182, 232, .08), transparent 70%); }
+  a { color: var(--link); }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 22px 0; font: 700 18px/1 var(--display); }
+  header img { width: 22px; height: 22px; }
+
+  .hero { display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; padding: 40px 0 72px; }
+  .chip { display: inline-block; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--edge);
+          background: var(--card); color: var(--muted); font-size: 14px; }
+  h1 { font: 800 clamp(38px, 5.4vw, 60px)/1.04 var(--display); letter-spacing: -.02em; margin: 18px 0 18px; }
+  h1 em { font-style: normal; background: linear-gradient(90deg, #8fd0ff, #6fe3e0); -webkit-background-clip: text;
+          background-clip: text; color: transparent; }
+  .lede { color: var(--muted); font-size: 19px; margin: 0 0 28px; max-width: 34em; }
+  kbd { font: 600 .9em var(--mono); padding: 1px 7px; border-radius: 6px; border: 1px solid var(--edge-ctl);
+        background: rgba(255,255,255,.06); color: var(--text); white-space: nowrap; }
+  .ctas { display: flex; flex-wrap: wrap; gap: 12px; }
+  .small { color: var(--muted); font-size: 14px; margin: 16px 0 0; }
+
+  .dl { position: relative; display: inline-flex; align-items: center; gap: 10px; padding: 16px 28px;
+        border-radius: 16px; color: #fff; text-decoration: none; white-space: nowrap;
+        font: 700 18px/1 var(--display); text-shadow: 0 1px 1px rgba(8,30,60,.4);
+        background: var(--gloss), var(--grad); border: 1px solid color-mix(in srgb, var(--a1) 55%, #fff 10%);
+        box-shadow: 0 10px 34px color-mix(in srgb, var(--a1) 45%, transparent), 0 2px 6px rgba(0,0,0,.35),
+                    inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 0 rgba(0,0,0,.18);
+        transition: transform .2s, filter .2s; }
+  .dl:hover { transform: translateY(-2px); filter: brightness(1.07); }
+  .dl:active { transform: translateY(1px) scale(.985); }
+  .dl svg { width: 20px; height: 20px; }
+  .ghost { display: inline-flex; align-items: center; padding: 15px 22px; border-radius: 16px;
+           border: 1px solid var(--edge-ctl); color: var(--text); text-decoration: none;
+           font: 600 17px/1 var(--display); background: var(--glass); transition: background .2s, transform .2s; }
+  .ghost:hover { background: rgba(255,255,255,.08); transform: translateY(-1px); }
+  .dl:focus-visible, .ghost:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; }
+
+  .shot { justify-self: center; width: 100%; max-width: 480px; }
+  .shot img { display: block; width: 100%; height: auto; border-radius: 12px;
+              box-shadow: 0 30px 80px -20px rgba(0,0,0,.9); }
+
+  h2 { font: 800 clamp(28px, 3.4vw, 38px)/1.1 var(--display); letter-spacing: -.015em; margin: 0 0 28px; }
+  section.more { padding: 64px 0; border-top: 1px solid var(--edge); }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card { padding: 22px 22px 20px; border-radius: 22px; border: 1px solid var(--edge); background: var(--glass); }
+  .card h3 { font: 700 19px/1.25 var(--display); margin: 0 0 8px; }
+  .card p { margin: 0; color: var(--muted); font-size: 16px; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+  .split img { display: block; width: 100%; max-width: 460px; height: auto; border-radius: 12px; justify-self: center;
+               box-shadow: 0 30px 80px -24px rgba(0,0,0,.9), 0 0 0 1px rgba(255,255,255,.06); }
+  .split p { color: var(--muted); margin: 0 0 14px; }
+
+  ul.facts { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+  ul.facts li { padding-left: 28px; position: relative; color: var(--muted); }
+  ul.facts li::before { content: ""; position: absolute; left: 4px; top: .62em; width: 10px; height: 10px;
+                        border-radius: 50%; background: var(--grad); }
+  ul.facts b { color: var(--text); font-weight: 600; }
+  code { font: .92em var(--mono); color: var(--text); }
+
+  footer { padding: 36px 0 48px; border-top: 1px solid var(--edge); color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 860px) {
+    .hero, .split { grid-template-columns: 1fr; gap: 40px; }
+    .hero { padding-top: 16px; }
+    .shot { max-width: 440px; }
+    .cards { grid-template-columns: 1fr; }
+    .split img { order: 2; }
+  }
+  @media (max-width: 480px) {
+    .wrap { padding: 0 16px; }
+    .dl, .ghost { width: 100%; justify-content: center; }
+    .chip { border-radius: 14px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .dl, .ghost { transition: none; } .dl:hover, .ghost:hover { transform: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><img src="icon.png" width="22" height="22" alt="">Onion Peel</header>
+
+  <section class="hero">
+    <div>
+      <span class="chip">Free for Windows 10 and 11 · open source · never goes online</span>
+      <h1>Peel a piece off <em>your screen.</em></h1>
+      <p class="lede">Press <kbd>Win</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>, pick an area, and it's on the clipboard.
+        That's all it does. No window, no tray icon, no history, no files saved.</p>
+      <div class="ctas">
+        <a class="dl" href="https://github.com/Onion-Alien/onion-peel/releases/latest/download/OnionPeelSetup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14"/></svg>Download for Windows</a>
+        <a class="ghost" href="https://github.com/Onion-Alien/onion-peel">Source code</a>
+      </div>
+      <p class="small">Installs in seconds, no admin rights · <a href="https://github.com/Onion-Alien/onion-peel/releases/latest">what's new</a><br>
+        Not code-signed yet, so Windows may warn the first time: click <b>More info</b>, then <b>Run anyway</b>.</p>
+    </div>
+    <div class="shot">
+      <img src="snip-dark.png" width="924" height="718" alt="The snip screen: the screen dimmed, a bar with Rectangle, Window and Full screen at the top, and a bright selection around a chart with its size, 414 × 150, below it">
+    </div>
+  </section>
+</div>
+
+<section class="more">
+  <div class="wrap">
+    <h2>Everything it does</h2>
+    <div class="cards">
+      <div class="card"><h3>Freezes the screen</h3><p>The picture is taken the moment you press the keys, so menus and tooltips stay put while you pick.</p></div>
+      <div class="card"><h3>Three ways to snip</h3><p>Drag a rectangle, or click a window or a whole monitor. Switch with <span style="white-space: nowrap"><kbd>1</kbd>, <kbd>2</kbd> and <kbd>3</kbd>.</span></p></div>
+      <div class="card"><h3>Every monitor</h3><p>Snip across all your screens, HDR ones included.</p></div>
+      <div class="card"><h3>Works over games</h3><p>Borderless fullscreen games get the snip screen right away. Exclusive fullscreen ones keep running, and the snip screen opens once you Alt+Tab out.</p></div>
+      <div class="card"><h3>Alt+Tab while snipping</h3><p>Bring another window to the front and the picture is retaken with it.</p></div>
+      <div class="card"><h3>Out of the way</h3><p><kbd>Esc</kbd> or a right-click closes it. It stays out of screen recordings and shares, like OBS and Discord.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="more">
+  <div class="wrap split">
+    <img src="install-dark.png" width="665" height="411" loading="lazy" alt="The Onion Peel installer: a short description, a picture of the snip screen, a Start with Windows checkbox, and Install and Cancel buttons">
+    <div>
+      <h2>One page, one click</h2>
+      <p>Choose whether Onion Peel should start with Windows, press <b>Install</b>, and it's running. No admin rights needed.</p>
+      <p>Running a newer installer updates it in place.</p>
+    </div>
+  </div>
+</section>
+
+<section class="more">
+  <div class="wrap split flip">
+    <div>
+      <h2>Easy to start, easy to remove</h2>
+      <p>Search the Start menu for <b>Onion Peel</b> to start it, if you didn't let it start with Windows.</p>
+      <p><b>Uninstall Onion Peel</b> is right next to it, or use Settings › Apps. It leaves nothing behind.</p>
+    </div>
+    <img src="start-menu-dark.png" width="1020" height="600" loading="lazy" alt="Windows Start menu search for onion peel: Onion Peel as the best match, and Uninstall Onion Peel under Apps">
+  </div>
+</section>
+
+<section class="more">
+  <div class="wrap">
+    <h2>Private by design</h2>
+    <ul class="facts">
+      <li><b>Never goes online.</b> No account, no update check, no usage counting.</li>
+      <li><b>Saves nothing.</b> The snip goes to the clipboard only: no files, no history.</li>
+      <li><b>Easy to remove:</b> <b>Uninstall Onion Peel</b> in the Start menu, or Settings › Apps.</li>
+      <li><b>Open source</b> under the GPL-3.0, so anyone can read exactly what it does.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">Onion Peel by Onion Alien · <a href="https://github.com/Onion-Alien/onion-peel">GitHub</a> ·
+    <a href="https://github.com/Onion-Alien/onion-peel/blob/main/LICENSE">GPL-3.0</a></div>
+</footer>
+</body>
+</html>
