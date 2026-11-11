@@ -8,7 +8,6 @@ use std::sync::Once;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
@@ -18,14 +17,16 @@ use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_F
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::capture::{self, Shot};
+use crate::desktop::{cursor_pos, is_switcher, pickable, visible_windows};
 use crate::dib::{rgb, wide, Dib};
-use crate::hook::held;
+use crate::geom::{contains, inflate, intersect, map_rect, offset, span, union};
+use crate::hook::{held, tap};
 use crate::{clip, main_hwnd};
 
 /// The snip screen is up (the keyboard hook reads this from its own thread).
 pub static OPEN: AtomicBool = AtomicBool::new(false);
 const CLASS: PCWSTR = w!("OnionPeelOverlay");
-/// Ticks every 50 ms while another window is in front (see `on_tick`).
+/// Ticks every 50 ms while the snip screen is open (see `on_tick`).
 const AWAY_TIMER: usize = 1;
 /// From the mouse hook while the Alt+Tab switcher is up: a drag started at (x, y) on screen.
 const WM_SWITCHER_DRAG: u32 = WM_APP + 0x40;
@@ -64,46 +65,6 @@ const WHITE: COLORREF = rgb(0xff, 0xff, 0xff);
 const DIM: COLORREF = rgb(0xa0, 0xa0, 0xa0);
 const BLACK: COLORREF = rgb(0, 0, 0);
 
-// ---- rectangle helpers (right and bottom are exclusive, like Windows) ----
-
-/// The box spanned by two corner pixels.
-fn span(a: (i32, i32), b: (i32, i32)) -> RECT {
-    RECT { left: a.0.min(b.0), top: a.1.min(b.1), right: a.0.max(b.0) + 1, bottom: a.1.max(b.1) + 1 }
-}
-
-fn inflate(r: RECT, n: i32) -> RECT {
-    RECT { left: r.left - n, top: r.top - n, right: r.right + n, bottom: r.bottom + n }
-}
-
-fn intersect(a: RECT, b: RECT) -> RECT {
-    RECT { left: a.left.max(b.left), top: a.top.max(b.top), right: a.right.min(b.right), bottom: a.bottom.min(b.bottom) }
-}
-
-/// Smallest box around both; an empty box counts as nothing.
-fn union(a: RECT, b: RECT) -> RECT {
-    let empty = |r: RECT| r.right <= r.left || r.bottom <= r.top;
-    match (empty(a), empty(b)) {
-        (true, _) => b,
-        (_, true) => a,
-        _ => RECT { left: a.left.min(b.left), top: a.top.min(b.top), right: a.right.max(b.right), bottom: a.bottom.max(b.bottom) },
-    }
-}
-
-fn contains(r: &RECT, p: (i32, i32)) -> bool {
-    p.0 >= r.left && p.0 < r.right && p.1 >= r.top && p.1 < r.bottom
-}
-
-/// The same spot of `r` in `b` as it has in `a`, scaled.
-fn map_rect(r: RECT, a: RECT, b: RECT) -> RECT {
-    let f = |v: i32, a0: i32, a1: i32, b0: i32, b1: i32| b0 + ((v - a0) as i64 * (b1 - b0) as i64 / (a1 - a0).max(1) as i64) as i32;
-    RECT {
-        left: f(r.left, a.left, a.right, b.left, b.right),
-        top: f(r.top, a.top, a.bottom, b.top, b.bottom),
-        right: f(r.right, a.left, a.right, b.left, b.right),
-        bottom: f(r.bottom, a.top, a.bottom, b.top, b.bottom),
-    }
-}
-
 fn blit(dst: HDC, src: HDC, r: RECT) {
     unsafe {
         let _ = BitBlt(dst, r.left, r.top, r.right - r.left, r.bottom - r.top, src, r.left, r.top, SRCCOPY);
@@ -133,6 +94,9 @@ pub struct Overlay {
     press_pick: bool,
     /// The area the last paint drew on, so the next one also wipes it.
     last_dirty: RECT,
+    /// The snip screen has been in front since this picture was taken. Only then does another
+    /// window coming to the front call for a new picture: one new picture per switch.
+    was_front: bool,
     /// While another window is in front: the one seen last tick, and for how many ticks.
     away: (HWND, u32),
     /// When `shot` is stretched to the screen: the picture at the game's own resolution, and
@@ -200,13 +164,14 @@ impl Overlay {
             mode,
             drag: None,
             cur: (cursor.x - ox, cursor.y - oy),
-            windows: windows.into_iter().map(|r| RECT { left: r.left - ox, top: r.top - oy, right: r.right - ox, bottom: r.bottom - oy }).collect(),
+            windows: windows.into_iter().map(|r| offset(r, -ox, -oy)).collect(),
             scale,
             bar: RECT::default(),
             buttons: [RECT::default(); 4],
             press_bar: None,
             press_pick: false,
             last_dirty: RECT::default(),
+            was_front: false,
             away: (HWND::default(), 0),
             original: None,
             taken: None,
@@ -479,14 +444,20 @@ impl Overlay {
         Act::Nothing
     }
 
-    /// Another window is in front (Alt+Tab, say, to a VM that keeps Win+Shift+S for itself).
-    /// Once Alt is up and the same window has stayed in front for about 150 ms, so the switch
-    /// is over and it has drawn itself, take a new picture of it.
+    /// Every 50 ms: is another window in front (Alt+Tab, say, to a VM that keeps Win+Shift+S
+    /// for itself)? Once Alt is up and the same window has stayed in front for about 150 ms, so
+    /// the switch is over and it has drawn itself, take a new picture of it.
+    ///
+    /// The window in front is looked up here rather than left to WM_ACTIVATE: Windows doesn't
+    /// always send that one to a window that took the front the way `force_foreground` does.
     fn on_tick(&mut self) -> Act {
         let fg = unsafe { GetForegroundWindow() };
         // The switcher takes every click while it's up, so watch the mouse ourselves meanwhile.
         mouse_hook((held(VK_MENU) && is_switcher(fg)).then_some(self.hwnd));
-        if held(VK_MENU) || fg == self.hwnd || fg != self.away.0 {
+        if fg == self.hwnd {
+            self.was_front = true;
+        }
+        if !self.was_front || held(VK_MENU) || fg == self.hwnd || fg.is_invalid() || fg != self.away.0 {
             self.away = (fg, 0);
             return Act::Nothing;
         }
@@ -494,9 +465,8 @@ impl Overlay {
         if self.away.1 < 3 {
             return Act::Nothing;
         }
-        unsafe {
-            let _ = KillTimer(self.hwnd, AWAY_TIMER);
-        }
+        // Not again until the snip screen has been back in front.
+        self.was_front = false;
         Act::Retake
     }
 }
@@ -537,16 +507,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             WM_LBUTTONUP => act = o.on_up(p),
             WM_RBUTTONUP => act = o.on_right(),
             WM_KEYDOWN if wp.0 == VK_ESCAPE.0 as usize => act = Act::Cancel,
-            WM_ACTIVATE => {
-                if wp.0 & 0xffff == WA_INACTIVE as usize {
-                    o.away = (HWND::default(), 0);
-                    SetTimer(hwnd, AWAY_TIMER, 50, None);
-                } else {
-                    let _ = KillTimer(hwnd, AWAY_TIMER);
-                    mouse_hook(None);
-                }
-                return None;
-            }
             WM_TIMER if wp.0 == AWAY_TIMER => act = o.on_tick(),
             WM_DISPLAYCHANGE => act = Act::Refit,
             WM_SWITCHER_DRAG => act = Act::SwitcherDrag(POINT { x: wp.0 as i32, y: lp.0 as i32 }),
@@ -559,62 +519,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     match act {
         Act::Snip(r) => close(Some(r)),
         Act::Cancel => close(None),
-        Act::Retake => retake(),
+        Act::Retake => {
+            retake(None, || {});
+        }
         Act::Refit => refit(),
         Act::SwitcherDrag(p) => switcher_drag(p),
         Act::Nothing => {}
     }
     handled.unwrap_or_else(|| DefWindowProcW(hwnd, msg, wp, lp))
-}
-
-/// Visible top-level windows, top of the z-order first, in screen coordinates.
-pub fn visible_windows() -> Vec<RECT> {
-    unsafe extern "system" fn each(h: HWND, lp: LPARAM) -> BOOL {
-        let out = &mut *(lp.0 as *mut Vec<RECT>);
-        out.extend(pickable(h));
-        TRUE
-    }
-    let mut out = vec![];
-    unsafe {
-        let _ = EnumWindows(Some(each), LPARAM(&mut out as *mut _ as isize));
-    }
-    out
-}
-
-/// A window's frame on screen, if it's something a person would want to snip.
-unsafe fn pickable(h: HWND) -> Option<RECT> {
-    if !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() || dwm::<u32>(h, DWMWA_CLOAKED).unwrap_or(0) != 0 {
-        return None;
-    }
-    let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
-    if ex & WS_EX_TRANSPARENT.0 != 0 {
-        return None; // click-through overlays
-    }
-    if ex & WS_EX_LAYERED.0 != 0 {
-        let (mut alpha, mut flags) = (0u8, LAYERED_WINDOW_ATTRIBUTES_FLAGS(0));
-        let got = GetLayeredWindowAttributes(h, None, Some(&mut alpha), Some(&mut flags)).is_ok();
-        if got && flags.0 & LWA_ALPHA.0 != 0 && alpha == 0 {
-            return None; // fully see-through
-        }
-    }
-    let mut class = [0u16; 64];
-    let n = GetClassNameW(h, &mut class) as usize;
-    match String::from_utf16_lossy(&class[..n]).as_str() {
-        "Progman" | "WorkerW" => return None, // the desktop itself: that's what Full screen is for
-        "OnionPeelOverlay" => return None,      // the snip screen, when the picture is retaken
-        _ => {}
-    }
-    let r = dwm(h, DWMWA_EXTENDED_FRAME_BOUNDS).unwrap_or_else(|| {
-        let mut r = RECT::default();
-        let _ = GetWindowRect(h, &mut r);
-        r
-    });
-    (r.right - r.left >= 8 && r.bottom - r.top >= 8).then_some(r)
-}
-
-unsafe fn dwm<T: Default>(h: HWND, attr: DWMWINDOWATTRIBUTE) -> Option<T> {
-    let mut v = T::default();
-    DwmGetWindowAttribute(h, attr, &mut v as *mut T as _, size_of::<T>() as u32).ok().map(|_| v)
 }
 
 /// Switch to the bar's mode number `i`, as if its button were clicked.
@@ -657,11 +569,7 @@ fn game_in_front() -> bool {
 fn grab_now() -> Option<Pending> {
     // Freeze first, so the snip screen itself never ends up in the picture.
     let shot = capture::grab(true)?;
-    let mut cursor = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut cursor);
-    }
-    Some(Pending { shot, windows: visible_windows(), cursor, game: unsafe { GetForegroundWindow() } })
+    Some(Pending { shot, windows: visible_windows(), cursor: cursor_pos(), game: unsafe { GetForegroundWindow() } })
 }
 
 /// Freeze the screen and put the snip screen over every monitor. Over a game in exclusive
@@ -680,7 +588,11 @@ pub fn open() {
         }
         return;
     }
-    PENDING.with(|s| s.borrow_mut().take());
+    if PENDING.with(|s| s.borrow_mut().take()).is_some() {
+        unsafe {
+            let _ = KillTimer(main_hwnd(), PENDING_TIMER);
+        }
+    }
     if let Some(p) = grab_now() {
         OPEN.store(true, Relaxed);
         if show(p).is_none() {
@@ -719,11 +631,10 @@ fn build(shot: Shot, windows: Vec<RECT>, cursor: POINT, mode: Mode) -> Option<Ov
     let (shot, windows, cursor, original) = match shot.fit_to_screen() {
         Some((fit, pairs)) => {
             let to_screen = |r: RECT| {
-                let r = RECT { left: r.left - shot.x, top: r.top - shot.y, right: r.right - shot.x, bottom: r.bottom - shot.y };
+                let r = offset(r, -shot.x, -shot.y);
                 let mid = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
                 let (on_screen, own) = pairs.iter().find(|(_, o)| contains(o, mid)).unwrap_or(&pairs[0]);
-                let n = map_rect(r, *own, *on_screen);
-                RECT { left: n.left + fit.x, top: n.top + fit.y, right: n.right + fit.x, bottom: n.bottom + fit.y }
+                offset(map_rect(r, *own, *on_screen), fit.x, fit.y)
             };
             let windows = windows.into_iter().map(to_screen).collect();
             let c = to_screen(RECT { left: cursor.x, top: cursor.y, right: cursor.x, bottom: cursor.y });
@@ -756,29 +667,33 @@ fn show(p: Pending) -> Option<()> {
         let _ = ShowWindow(hwnd, SW_SHOW);
         force_foreground(hwnd);
         let _ = UpdateWindow(hwnd);
+        SetTimer(hwnd, AWAY_TIMER, 50, None);
     }
     Some(())
 }
 
-/// Take a new picture behind the open snip screen, keeping its mode.
-fn retake() {
-    let Some((hwnd, mode)) = STATE.with(|s| s.borrow().as_ref().map(|o| (o.hwnd, o.mode))) else { return };
+/// Take a new picture behind the open snip screen and show that one, keeping the mode.
+/// `leave_out` is a window Window mode shouldn't offer. `then` runs once the picture is taken,
+/// before the snip screen comes back to the front. Returns where the mouse was.
+fn retake(leave_out: Option<HWND>, then: impl FnOnce()) -> Option<POINT> {
+    let (hwnd, mode) = STATE.with(|s| s.borrow().as_ref().map(|o| (o.hwnd, o.mode)))?;
     unsafe {
-        // Windows older than 10 (2004) can't leave it out of captures: hide it meanwhile.
+        // Windows older than 10 (2004) can't leave the snip screen out of captures: hide it meanwhile.
         let mut affinity = 0;
         let hide = GetWindowDisplayAffinity(hwnd, &mut affinity).is_err() || affinity != WDA_EXCLUDEFROMCAPTURE.0;
         if hide {
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
-        let mut cursor = POINT::default();
-        let _ = GetCursorPos(&mut cursor);
-        let o = capture::grab(true).and_then(|shot| {
-            let o = build(shot, visible_windows(), cursor, mode)?;
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, o.shot.x, o.shot.y, o.shot.img.w, o.shot.img.h, SWP_NOACTIVATE);
-            Some(o)
-        });
-        if let Some(mut o) = o {
+        let shot = capture::grab(true);
+        let mut windows = visible_windows();
+        if let Some(r) = leave_out.and_then(pickable) {
+            windows.retain(|w| *w != r);
+        }
+        then();
+        let cursor = cursor_pos();
+        if let Some(mut o) = shot.and_then(|shot| build(shot, windows, cursor, mode)) {
             o.hwnd = hwnd;
+            let _ = SetWindowPos(hwnd, HWND_TOPMOST, o.shot.x, o.shot.y, o.shot.img.w, o.shot.img.h, SWP_NOACTIVATE);
             STATE.with(|s| *s.borrow_mut() = Some(o));
             let _ = InvalidateRect(hwnd, None, false);
         }
@@ -786,6 +701,7 @@ fn retake() {
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
         force_foreground(hwnd);
+        Some(cursor)
     }
 }
 
@@ -819,6 +735,8 @@ fn refit() {
                 let _ = InvalidateRect(hwnd, None, false);
             }
             None => {
+                // No memory for the new size: close, leaving nothing behind (the mouse hook too).
+                mouse_hook(None);
                 let _ = DestroyWindow(hwnd);
                 OPEN.store(false, Relaxed);
             }
@@ -861,13 +779,6 @@ pub fn close(snip: Option<RECT>) {
 // for a drag over it: the picture is retaken with the switcher in it, the switcher is closed and
 // the drag carries on in the snip screen. A plain click still goes to the switcher.
 
-/// The Alt+Tab switcher (Windows 11, then 10).
-fn is_switcher(h: HWND) -> bool {
-    let mut class = [0u16; 64];
-    let n = unsafe { GetClassNameW(h, &mut class) } as usize;
-    matches!(String::from_utf16_lossy(&class[..n]).as_str(), "XamlExplorerHostIslandWindow" | "MultitaskingViewFrame" | "TaskSwitcherWnd")
-}
-
 /// Watch the mouse for `overlay`, or stop watching.
 fn mouse_hook(overlay: Option<HWND>) {
     match (MOUSE.get(), overlay) {
@@ -891,9 +802,9 @@ fn mouse_hook(overlay: Option<HWND>) {
 
 /// Runs on this thread (from inside its message loop), so it only posts to the snip screen.
 unsafe extern "system" fn mouse_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let m = &*(lp.0 as *const MSLLHOOKSTRUCT);
-    if code == HC_ACTION as i32 && m.flags & LLMHF_INJECTED == 0 {
-        if let Some((_, hwnd)) = MOUSE.get() {
+    if code == HC_ACTION as i32 {
+        let m = &*(lp.0 as *const MSLLHOOKSTRUCT);
+        if let Some((_, hwnd)) = MOUSE.get().filter(|_| m.flags & LLMHF_INJECTED == 0) {
             match wp.0 as u32 {
                 WM_LBUTTONDOWN => {
                     PRESS.set(Some(m.pt));
@@ -932,45 +843,15 @@ fn replay_click() {
 /// A drag started over the switcher at `start`: picture it, close it, carry on dragging.
 fn switcher_drag(start: POINT) {
     mouse_hook(None);
-    let Some((hwnd, mode)) = STATE.with(|s| s.borrow().as_ref().map(|o| (o.hwnd, o.mode))) else { return };
-    unsafe {
-        let switcher = GetForegroundWindow();
-        // Windows older than 10 (2004) can't leave the snip screen out of captures: hide it meanwhile.
-        let mut affinity = 0;
-        let hide = GetWindowDisplayAffinity(hwnd, &mut affinity).is_err() || affinity != WDA_EXCLUDEFROMCAPTURE.0;
-        if hide {
-            let _ = ShowWindow(hwnd, SW_HIDE);
+    // The switcher's own window is see-through and covers the whole screen: not one to pick.
+    let switcher = unsafe { GetForegroundWindow() };
+    // Esc closes the switcher without switching, so the snip screen comes back to the front.
+    let Some(cursor) = retake(Some(switcher), || tap(VK_ESCAPE, OURS)) else { return };
+    STATE.with(|s| {
+        if let Some(o) = s.borrow_mut().as_mut() {
+            let (x, y) = (o.shot.x, o.shot.y);
+            o.on_down((start.x - x, start.y - y));
+            o.on_move((cursor.x - x, cursor.y - y));
         }
-        let shot = capture::grab(true);
-        let mut windows = visible_windows();
-        // The switcher's own window is see-through and covers the whole screen: not one to pick.
-        if let Some(r) = pickable(switcher) {
-            windows.retain(|w| *w != r);
-        }
-        // Esc closes the switcher without switching, so the snip screen comes back to the front.
-        let key = |flags| INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_ESCAPE, dwFlags: flags, dwExtraInfo: OURS, ..Default::default() } },
-        };
-        SendInput(&[key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)], size_of::<INPUT>() as i32);
-        let mut cursor = POINT::default();
-        let _ = GetCursorPos(&mut cursor);
-        if let Some(mut o) = shot.and_then(|shot| build(shot, windows, cursor, mode)) {
-            o.hwnd = hwnd;
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, o.shot.x, o.shot.y, o.shot.img.w, o.shot.img.h, SWP_NOACTIVATE);
-            STATE.with(|s| *s.borrow_mut() = Some(o));
-            let _ = InvalidateRect(hwnd, None, false);
-        }
-        if hide {
-            let _ = ShowWindow(hwnd, SW_SHOW);
-        }
-        force_foreground(hwnd);
-        STATE.with(|s| {
-            if let Some(o) = s.borrow_mut().as_mut() {
-                let (x, y) = (o.shot.x, o.shot.y);
-                o.on_down((start.x - x, start.y - y));
-                o.on_move((cursor.x - x, cursor.y - y));
-            }
-        });
-    }
+    });
 }

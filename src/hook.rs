@@ -21,15 +21,20 @@ fn post(msg: u32, wp: usize) {
     }
 }
 
-/// Tap an unassigned key, so letting go of Win doesn't open the Start menu.
-fn mask_win_key() {
+/// Press and let go of a key, as if typed. `extra` marks the two events as ours.
+pub fn tap(vk: VIRTUAL_KEY, extra: usize) {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0xE8), dwFlags: flags, ..Default::default() } },
+        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: flags, dwExtraInfo: extra, ..Default::default() } },
     };
     unsafe {
         SendInput(&[key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)], size_of::<INPUT>() as i32);
     }
+}
+
+/// Tap an unassigned key, so letting go of Win doesn't open the Start menu.
+fn mask_win_key() {
+    tap(VIRTUAL_KEY(0xE8), 0);
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -45,6 +50,9 @@ unsafe extern "system" fn hook_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESUL
                     }
                     return LRESULT(1);
                 }
+                // S still held after Win or Shift was let go: its repeats belong to the hotkey
+                // too. Passed on, the app in front would see S go down and never come up.
+                VK_S if down && ATE_S.load(Relaxed) => return LRESULT(1),
                 VK_S if !down && ATE_S.swap(false, Relaxed) => return LRESULT(1),
                 // Esc always closes the snip, even if a game kept keyboard focus.
                 VK_ESCAPE if down && overlay::OPEN.load(Relaxed) => {
@@ -68,9 +76,13 @@ unsafe extern "system" fn hook_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESUL
 
 pub fn spawn() {
     std::thread::spawn(|| unsafe {
-        let _hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), HINSTANCE::default(), 0);
-        // Windows calls the hook from inside GetMessageW; nothing is ever posted here.
-        let mut m = MSG::default();
-        while GetMessageW(&mut m, HWND::default(), 0, 0).as_bool() {}
+        if SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), HINSTANCE::default(), 0).is_ok() {
+            // Windows calls the hook from inside GetMessageW; nothing is ever posted here.
+            // (GetMessageW gives -1 for an error, which must end the loop too.)
+            let mut m = MSG::default();
+            while GetMessageW(&mut m, HWND::default(), 0, 0).0 > 0 {}
+        }
+        // No hook, no hotkey: quit rather than sit there doing nothing.
+        post(WM_CLOSE, 0);
     });
 }

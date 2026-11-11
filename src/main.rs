@@ -8,7 +8,9 @@
 
 mod capture;
 mod clip;
+mod desktop;
 mod dib;
+mod geom;
 mod hook;
 mod overlay;
 #[cfg(feature = "selftest")]
@@ -99,7 +101,8 @@ fn main() {
         MAIN.store(hwnd.0 as isize, Relaxed);
         hook::spawn();
         let mut m = MSG::default();
-        while GetMessageW(&mut m, HWND::default(), 0, 0).as_bool() {
+        // GetMessageW gives 0 for WM_QUIT and -1 for an error: both end the program.
+        while GetMessageW(&mut m, HWND::default(), 0, 0).0 > 0 {
             DispatchMessageW(&m);
         }
     }

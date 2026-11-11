@@ -3,6 +3,8 @@
 //! DXGI Desktop Duplication first (the path OBS and Discord use: it sees borderless and most
 //! fullscreen games, where GDI only gets black), GDI BitBlt as the fallback per monitor.
 
+use std::sync::mpsc::{channel, Receiver};
+
 use windows::core::Interface;
 use windows::Win32::Devices::Display::*;
 use windows::Win32::Foundation::*;
@@ -14,6 +16,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dib::Dib;
+use crate::geom::offset;
 
 /// The whole virtual screen, frozen.
 pub struct Shot {
@@ -36,21 +39,35 @@ struct Frame {
     white: Option<f32>,
 }
 
+/// Where the virtual screen (every monitor together) is right now: x, y, width, height.
+fn virtual_screen() -> (i32, i32, i32, i32) {
+    let metric = |i| unsafe { GetSystemMetrics(i) };
+    (metric(SM_XVIRTUALSCREEN), metric(SM_YVIRTUALSCREEN), metric(SM_CXVIRTUALSCREEN).max(1), metric(SM_CYVIRTUALSCREEN).max(1))
+}
+
+/// One monitor through Desktop Duplication, on a thread of its own. The picture is handed over
+/// the moment it's read: closing the Direct3D device afterwards takes some 10 ms, and the snip
+/// screen doesn't wait for that.
+fn duplicate_on_thread(a: u32, o: u32) -> Receiver<Result<Frame, String>> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let dup = Duplication::open(a, o);
+        let _ = tx.send(dup.as_ref().map_err(String::clone).and_then(Duplication::frame));
+    });
+    rx
+}
+
 /// `dxgi: false` uses GDI for every monitor (the self-test compares the two).
 pub fn grab(dxgi: bool) -> Option<Shot> {
-    let metric = |i| unsafe { GetSystemMetrics(i) };
-    let (x, y) = (metric(SM_XVIRTUALSCREEN), metric(SM_YVIRTUALSCREEN));
-    let img = Dib::new(metric(SM_CXVIRTUALSCREEN).max(1), metric(SM_CYVIRTUALSCREEN).max(1))?;
+    let (x, y, w, h) = virtual_screen();
+    let img = Dib::new(w, h)?;
     let mut shot = Shot { x, y, img, monitors: vec![], how: vec![] };
 
     // All monitors at once, so the freeze takes as long as the slowest one, not the sum.
-    let jobs: Vec<_> = outputs()
-        .into_iter()
-        .map(|(a, o, r)| (r, dxgi.then(|| std::thread::spawn(move || duplicate(a, o)))))
-        .collect();
+    let jobs: Vec<_> = outputs().into_iter().map(|(a, o, r)| (r, dxgi.then(|| duplicate_on_thread(a, o)))).collect();
     for (r, job) in jobs {
-        let r = RECT { left: r.left - x, top: r.top - y, right: r.right - x, bottom: r.bottom - y };
-        let how = match job.map(|j| j.join().unwrap_or_else(|_| Err("panicked".into()))) {
+        let r = offset(r, -x, -y);
+        let how = match job.map(|j| j.recv().unwrap_or_else(|_| Err("panicked".into()))) {
             Some(Ok(frame)) => {
                 shot.paste(r, &frame);
                 frame.white.map_or("dxgi".into(), |w| format!("dxgi, 16-bit, white {w:.2}"))
@@ -82,17 +99,12 @@ impl Shot {
     /// was taken (a game in exclusive fullscreen can run at its own resolution). Also returns
     /// each monitor's rectangle in the stretched picture and in this one.
     pub fn fit_to_screen(&self) -> Option<(Shot, Vec<(RECT, RECT)>)> {
-        let metric = |i| unsafe { GetSystemMetrics(i) };
-        let (x, y) = (metric(SM_XVIRTUALSCREEN), metric(SM_YVIRTUALSCREEN));
-        let (w, h) = (metric(SM_CXVIRTUALSCREEN).max(1), metric(SM_CYVIRTUALSCREEN).max(1));
+        let (x, y, w, h) = virtual_screen();
         // The quick check first, so a normal snip opens no slower.
         if (x, y, w, h) == (self.x, self.y, self.img.w, self.img.h) {
             return None;
         }
-        let now: Vec<RECT> = outputs()
-            .into_iter()
-            .map(|(_, _, r)| RECT { left: r.left - x, top: r.top - y, right: r.right - x, bottom: r.bottom - y })
-            .collect();
+        let now: Vec<RECT> = outputs().into_iter().map(|(_, _, r)| offset(r, -x, -y)).collect();
         if now.len() != self.monitors.len() {
             return None;
         }
@@ -163,58 +175,74 @@ fn step<T>(r: windows::core::Result<T>, name: &str) -> Result<T, String> {
     r.map_err(|e| format!("{name}: {e}"))
 }
 
-/// One monitor through Desktop Duplication. COM objects can't cross threads, so each
+/// One monitor's Desktop Duplication session. COM objects can't cross threads, so each
 /// thread opens its own adapter and output by index.
-fn duplicate(a: u32, o: u32) -> Result<Frame, String> {
-    unsafe {
-        let factory = step(CreateDXGIFactory1::<IDXGIFactory1>(), "factory")?;
-        let adapter = step(factory.EnumAdapters1(a), "adapter")?;
-        let output = step(adapter.EnumOutputs(o), "output")?;
-        let (mut device, mut ctx) = (None, None);
-        let made = D3D11CreateDevice(
-            &adapter,
-            D3D_DRIVER_TYPE_UNKNOWN,
-            HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            None,
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            None,
-            Some(&mut ctx),
-        );
-        step(made, "device")?;
-        let (device, ctx): (ID3D11Device, ID3D11DeviceContext) = (device.ok_or("no device")?, ctx.ok_or("no context")?);
+struct Duplication {
+    device: ID3D11Device,
+    ctx: ID3D11DeviceContext,
+    dup: IDXGIOutputDuplication,
+    /// What a 16-bit float desktop's white is (1.0 for an 8-bit desktop).
+    white: f32,
+}
 
-        // Take the desktop in its own format. HDR and auto-colour-managed desktops are 16-bit
-        // floats, and Windows' own conversion of those to 8-bit comes out far too dark.
-        let formats = [DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM];
-        let dup = match output.cast::<IDXGIOutput5>().and_then(|o| o.DuplicateOutput1(&device, 0, &formats)) {
-            Ok(dup) => dup,
-            Err(_) => step(output.cast::<IDXGIOutput1>().and_then(|o| o.DuplicateOutput(&device)), "duplicate")?,
-        };
-        let desc = dup.GetDesc();
-        if desc.Rotation != DXGI_MODE_ROTATION_IDENTITY && desc.Rotation != DXGI_MODE_ROTATION_UNSPECIFIED {
-            return Err("rotated".into()); // GDI already returns it the right way up
+impl Duplication {
+    fn open(a: u32, o: u32) -> Result<Duplication, String> {
+        unsafe {
+            let factory = step(CreateDXGIFactory1::<IDXGIFactory1>(), "factory")?;
+            let adapter = step(factory.EnumAdapters1(a), "adapter")?;
+            let output = step(adapter.EnumOutputs(o), "output")?;
+            let (mut device, mut ctx) = (None, None);
+            let made = D3D11CreateDevice(
+                &adapter,
+                D3D_DRIVER_TYPE_UNKNOWN,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut ctx),
+            );
+            step(made, "device")?;
+            let (device, ctx): (ID3D11Device, ID3D11DeviceContext) = (device.ok_or("no device")?, ctx.ok_or("no context")?);
+
+            // Take the desktop in its own format. HDR and auto-colour-managed desktops are 16-bit
+            // floats, and Windows' own conversion of those to 8-bit comes out far too dark.
+            let formats = [DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM];
+            let dup = match output.cast::<IDXGIOutput5>().and_then(|o| o.DuplicateOutput1(&device, 0, &formats)) {
+                Ok(dup) => dup,
+                Err(_) => step(output.cast::<IDXGIOutput1>().and_then(|o| o.DuplicateOutput(&device)), "duplicate")?,
+            };
+            let desc = dup.GetDesc();
+            if desc.Rotation != DXGI_MODE_ROTATION_IDENTITY && desc.Rotation != DXGI_MODE_ROTATION_UNSPECIFIED {
+                return Err("rotated".into()); // GDI already returns it the right way up
+            }
+            let white = match desc.ModeDesc.Format {
+                DXGI_FORMAT_R16G16B16A16_FLOAT => sdr_white(&step(output.GetDesc(), "output name")?.DeviceName),
+                _ => 1.0,
+            };
+            Ok(Duplication { device, ctx, dup, white })
         }
-        let white = match desc.ModeDesc.Format {
-            DXGI_FORMAT_R16G16B16A16_FLOAT => sdr_white(&step(output.GetDesc(), "output name")?.DeviceName),
-            _ => 1.0,
-        };
+    }
 
+    /// The monitor as it looks now.
+    fn frame(&self) -> Result<Frame, String> {
         // The first frame after DuplicateOutput can be an empty surface (LastPresentTime 0).
         // Only a frame Windows actually presented counts. A monitor showing a game presents
         // every refresh, so this is quick there; a monitor where nothing moves gets GDI instead.
         for _ in 0..4 {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut res = None;
-            match dup.AcquireNextFrame(35, &mut info, &mut res) {
-                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => continue,
-                other => step(other, "acquire")?,
-            }
-            let staged = res.filter(|_| info.LastPresentTime != 0).and_then(|res| stage(&device, &ctx, &res));
-            let _ = dup.ReleaseFrame();
-            if let Some(tex) = staged {
-                return read(&ctx, &tex, white);
+            unsafe {
+                match self.dup.AcquireNextFrame(35, &mut info, &mut res) {
+                    Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => continue,
+                    other => step(other, "acquire")?,
+                }
+                let staged = res.filter(|_| info.LastPresentTime != 0).and_then(|res| stage(&self.device, &self.ctx, &res));
+                let _ = self.dup.ReleaseFrame();
+                if let Some(tex) = staged {
+                    return read(&self.ctx, &tex, self.white);
+                }
             }
         }
         Err("no new frame".into())
@@ -251,27 +279,36 @@ unsafe fn read(ctx: &ID3D11DeviceContext, tex: &ID3D11Texture2D, white: f32) -> 
     step(ctx.Map(tex, 0, D3D11_MAP_READ, 0, Some(&mut map)), "map")?;
     let (w, h, pitch) = (d.Width as usize, d.Height as usize, map.RowPitch as usize);
     let row = w * if fp16 { 8 } else { 4 };
-    let src = std::slice::from_raw_parts(map.pData as *const u8, pitch * (h - 1) + row);
-    let mut px = Vec::with_capacity(w * h * 4);
-    if fp16 {
-        let lut = srgb_table(white);
-        for line in src.chunks(pitch) {
-            for p in line[..row].as_chunks::<8>().0.iter() {
-                let c = |i: usize| lut[u16::from_le_bytes([p[i], p[i + 1]]) as usize];
-                px.extend_from_slice(&[c(4), c(2), c(0), 255]); // RGBA halves to BGRA bytes
-            }
-        }
-    } else {
-        for line in src.chunks(pitch) {
-            px.extend_from_slice(&line[..row]);
-        }
+    if w == 0 || h == 0 || pitch < row || map.pData.is_null() {
+        ctx.Unmap(tex, 0);
+        return Err("empty frame".into());
     }
+    let src = std::slice::from_raw_parts(map.pData as *const u8, pitch * (h - 1) + row);
+    let px = unpack(src, pitch, w, h, fp16.then(|| srgb_table(white)).as_deref());
     ctx.Unmap(tex, 0);
     // A fully black frame usually means duplication didn't really see the screen.
     if px.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0]) {
         return Err("all black".into());
     }
     Ok(Frame { w: w as i32, h: h as i32, px, white: fp16.then_some(white) })
+}
+
+/// A mapped frame (rows `pitch` bytes apart) as tightly packed BGRA. With `lut`, the frame is
+/// 16-bit float RGBA and each half goes through the table; without, it is BGRA already.
+fn unpack(src: &[u8], pitch: usize, w: usize, h: usize, lut: Option<&[u8]>) -> Vec<u8> {
+    let mut px = vec![0; w * h * 4];
+    for (out, line) in px.chunks_exact_mut(w * 4).zip(src.chunks(pitch)) {
+        match lut {
+            Some(lut) => {
+                for (d, p) in out.as_chunks_mut::<4>().0.iter_mut().zip(line.as_chunks::<8>().0) {
+                    let c = |i: usize| lut[u16::from_le_bytes([p[i], p[i + 1]]) as usize];
+                    *d = [c(4), c(2), c(0), 255]; // RGBA halves to BGRA bytes
+                }
+            }
+            None => out.copy_from_slice(&line[..w * 4]),
+        }
+    }
+    px
 }
 
 /// Every 16-bit float (by bit pattern) of linear scRGB light to an 8-bit sRGB value, with
@@ -327,5 +364,65 @@ fn sdr_white(device: &[u16; 32]) -> f32 {
             }
         }
         1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_floats() {
+        assert_eq!(half(0x0000), 0.0);
+        assert_eq!(half(0x3C00), 1.0);
+        assert_eq!(half(0x3800), 0.5);
+        assert_eq!(half(0x4000), 2.0);
+        assert_eq!(half(0xBC00), -1.0);
+        assert_eq!(half(0x0001), 2f32.powi(-24)); // the smallest one
+        assert_eq!(half(0x7C00), f32::INFINITY);
+    }
+
+    #[test]
+    fn srgb_table_runs_black_to_white_and_clips() {
+        let t = srgb_table(1.0);
+        assert_eq!(t.len(), 65536);
+        assert_eq!((t[0x0000], t[0x3C00]), (0, 255));
+        assert_eq!(t[0x3800], 188); // linear 0.5 is sRGB 188
+        assert_eq!((t[0x4000], t[0x7C00]), (255, 255)); // brighter than white
+        assert_eq!((t[0xBC00], t[0xFC00]), (0, 0)); // below black
+        // With a brighter SDR white, the old white is no longer full white.
+        let t2 = srgb_table(2.0);
+        assert_eq!((t2[0x4000], t2[0x3C00]), (255, 188));
+    }
+
+    #[test]
+    fn unpack_drops_row_padding() {
+        // 2x2 BGRA with 12-byte rows; the last row has no padding after it.
+        let src = [1, 2, 3, 4, 5, 6, 7, 8, 0xEE, 0xEE, 0xEE, 0xEE, 9, 10, 11, 12, 13, 14, 15, 16];
+        assert_eq!(unpack(&src, 12, 2, 2, None), (1..=16).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn unpack_turns_float_rgba_into_bgra_bytes() {
+        // One pixel: R = 1.0, G = 0.5, B = 0.0, alpha anything.
+        let src = [0x00, 0x3C, 0x00, 0x38, 0x00, 0x00, 0x34, 0x12];
+        assert_eq!(unpack(&src, 8, 1, 1, Some(&srgb_table(1.0))), [0, 188, 255, 255]);
+    }
+
+    #[test]
+    fn paste_clips_a_frame_to_its_monitor_and_the_picture() {
+        let img = Dib::new(4, 3).unwrap();
+        let mut shot = Shot { x: 0, y: 0, img, monitors: vec![], how: vec![] };
+        // A 3x2 frame for a monitor at (2, 1) that is 2 wide: the third column and anything
+        // below the picture must be left out.
+        let frame = Frame { w: 3, h: 2, px: (0..24).map(|i| 100 + i).collect(), white: None };
+        shot.paste(RECT { left: 2, top: 1, right: 4, bottom: 3 }, &frame);
+        let px = shot.img.pixels();
+        assert!(px[..16].iter().all(|&b| b == 0)); // row 0 untouched
+        assert_eq!(&px[16..32], &[0, 0, 0, 0, 0, 0, 0, 0, 100, 101, 102, 103, 104, 105, 106, 107]);
+        assert_eq!(&px[32..48], &[0, 0, 0, 0, 0, 0, 0, 0, 112, 113, 114, 115, 116, 117, 118, 119]);
+        // A monitor left of the picture's edge is clipped too, not wrapped.
+        shot.paste(RECT { left: -2, top: 0, right: 1, bottom: 1 }, &frame);
+        assert_eq!(&shot.img.pixels()[..8], &[108, 109, 110, 111, 0, 0, 0, 0]);
     }
 }

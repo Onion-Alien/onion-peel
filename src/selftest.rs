@@ -11,7 +11,8 @@ use windows::Win32::Foundation::{POINT, RECT};
 
 use crate::capture;
 use crate::clip;
-use crate::overlay::{self, Mode, Overlay};
+use crate::desktop;
+use crate::overlay::{Mode, Overlay};
 
 fn save_bmp(path: &str, w: i32, h: i32, bgra: &[u8]) {
     let size = 54 + bgra.len() as u32;
@@ -73,7 +74,7 @@ pub fn run(dir: &str) {
     writeln!(log, "pack ok: {pack_ok}").unwrap();
 
     let t = Instant::now();
-    let found = overlay::visible_windows();
+    let found = desktop::visible_windows();
     writeln!(log, "windows found: {} in {} ms", found.len(), t.elapsed().as_millis()).unwrap();
 
     // Fixed picture and windows from here on (screen coordinates for the windows).
