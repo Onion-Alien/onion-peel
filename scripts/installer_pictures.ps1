@@ -1,4 +1,4 @@
-<# Pictures of the installer's pages, dark and light, for checking and for the README.
+<# Pictures of the installer's pages, for checking and for the README.
    Builds the /DPREVIEW installer (it installs nothing), runs it on a hidden Windows desktop
    (nothing reaches the screen), saves each page as a PNG, clicks Install, saves the last
    page, then closes it.
@@ -109,11 +109,9 @@ public static class OnionSetupShots {
 "@
 }
 
-foreach ($style in 'dark', 'light') {
-    $dir = Join-Path $root "target\installer\preview-$style"
-    & $iscc /Q /DPREVIEW "/DSHOTSTYLE=$style" "/O$dir" (Join-Path $root 'installer\OnionPeel.iss')
-    if ($LASTEXITCODE) { throw "ISCC failed ($style)" }
-    $pids = [OnionSetupShots]::Run((Join-Path $dir 'OnionPeelSetup.exe'), (Join-Path $out "setup-$style"))
-    foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
-}
+$dir = Join-Path $root 'target\installer\preview'
+& $iscc /Q /DPREVIEW "/O$dir" (Join-Path $root 'installer\OnionPeel.iss')
+if ($LASTEXITCODE) { throw 'ISCC failed' }
+$pids = [OnionSetupShots]::Run((Join-Path $dir 'OnionPeelSetup.exe'), (Join-Path $out 'setup'))
+foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
 [OnionSetupShots]::Log

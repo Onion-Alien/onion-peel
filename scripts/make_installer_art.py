@@ -1,10 +1,10 @@
 """Draw the picture on the right of the installer's pages (build-release.ps1 runs this; the
 outputs are build files in target/installer, not committed):
 
-- snip-{dark,light}-{100..200}.png  a small screen with the snip screen open on it: two
-                                    windows, dimmed, a bright selection with its size, and
-                                    the bar on top. One per display scale, so Setup never
-                                    stretches it; light or dark windows to match Setup.
+- snip-light-{100..200}.png  a small screen with the snip screen open on it: two windows,
+                             dimmed, a bright selection with its size, and the bar on top.
+                             One per display scale, so Setup never stretches it. (--site
+                             draws the dark one for the web page instead.)
 
 The bar, the dimming, the frame and the size label copy src/overlay.rs (its colours,
 radii and Segoe UI), shrunk to fit. Nothing here is a real screenshot.
@@ -126,9 +126,8 @@ def main() -> int:
         print(f"wrote {pic.relative_to(ROOT)}")
         return 0
     OUT.mkdir(parents=True, exist_ok=True)
-    for theme in THEMES:
-        for pct in SCALES:
-            draw(theme, pct).save(OUT / f"snip-{theme}-{pct}.png")
+    for pct in SCALES:
+        draw("light", pct).save(OUT / f"snip-light-{pct}.png")
     print(f"wrote the pictures to {OUT.relative_to(ROOT)}")
     return 0
 

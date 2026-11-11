@@ -35,7 +35,7 @@ Build anything you'll share with `powershell -File scripts/build-release.ps1`, n
 contain your user name. The script maps them to neutral names and checks the exe for your
 user name, PC name and home folder. Then it builds the installer around it
 (`target/installer/OnionPeelSetup.exe`, the file that's published), checks that too, and
-prints its SHA-256. It needs Python with Pillow and Inno Setup 6.6 or newer
+prints its SHA-256. It needs Python with Pillow and Inno Setup 6.7 or newer
 (`winget install JRSoftware.InnoSetup`).
 
 The exe never installs itself. The installer ([installer/OnionPeel.iss](installer/OnionPeel.iss))

@@ -8,20 +8,20 @@
 ;     (ticked; an update keeps the last install's choice). Then installing, then "All
 ;     done". Onion Peel starts at the end of every install (it has no window, so there's
 ;     nothing to "open")
-;   - Inno's Windows 11 look, light or dark like Windows, with no side panel or header
-;     logo: the snip screen picture is the only image
+;   - Inno's plain "modern" look with no side panel or header logo: the snip screen
+;     picture is the only image. Setup's own icon is Inno's, and it starts with Inno's
+;     64-bit loader: see "Virus scanners" at [Setup]
 ;   - Start menu: "Onion Peel" and "Uninstall Onion Peel"; Settings > Apps entry
 ;   - a running copy is asked to close first (onion-peel.exe --quit), on install and
 ;     uninstall, so its exe can be replaced or removed
 ;   - updating over 1.0's self-install: its own Settings > Apps entry is removed, so
 ;     there's one entry, and its startup choice is kept
 ;
-; Built by scripts\build-release.ps1 (needs Inno Setup 6.6 or newer:
+; Built by scripts\build-release.ps1 (needs Inno Setup 6.7 or newer:
 ; winget install JRSoftware.InnoSetup), which builds the exe and draws the pictures first
 ; (scripts\make_installer_art.py: the snip screen picture at each display scale).
-; /DSHOTSTYLE=dark or light forces that look, for the README pictures; otherwise it follows
-; Windows' own light or dark mode. /DPREVIEW is a look at the pages only: it installs
-; nothing (scripts\installer_pictures.ps1).
+; /DPREVIEW is a look at the pages only: it installs nothing
+; (scripts\installer_pictures.ps1).
 
 #define AppName "Onion Peel"
 #define AppExe "onion-peel.exe"
@@ -29,9 +29,6 @@
 #define RegName "OnionPeel"
 #ifndef AppVersion
   #define AppVersion "0.0.0"
-#endif
-#ifndef SHOTSTYLE
-  #define SHOTSTYLE "dynamic"
 #endif
 
 [Setup]
@@ -67,9 +64,17 @@ DisableWelcomePage=yes
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
-WizardStyle=modern {#SHOTSTYLE} windows11 hidebevels
+; Virus scanners: a setup this small is called malware by a few machine-learning
+; scanners on VirusTotal whatever is inside it (the app's own exe scans clean). Tested one
+; change at a time, three things each cost a flag, so don't bring one back without
+; scanning the result (scripts\vt_scan.py):
+;   - Inno's 32-bit loader (Skyhigh, Cylance, DeepInstinct): UseSetupLdr=x64
+;   - an icon of our own on the setup file (APEX), so no SetupIconFile: Setup keeps
+;     Inno's icon. The installed app has its own icon as before
+;   - the Windows 11 look, "dynamic windows11" (CrowdStrike, most builds): plain modern
+UseSetupLdr=x64
+WizardStyle=modern
 WizardSizePercent=100
-SetupIconFile=..\res\onion-peel.ico
 ; no side panel or header logo (InitializeWizard adds the snip screen picture instead)
 WizardImageFile=
 WizardSmallImageFile=
@@ -100,7 +105,7 @@ Name: "startup"; Description: "Start with Windows"
 
 [Files]
 ; the snip screen picture, for the pages only (never installed)
-Source: "..\target\installer\snip-*.png"; Flags: dontcopy
+Source: "..\target\installer\snip-light-*.png"; Flags: dontcopy
 #ifndef PREVIEW
 
 [Dirs]
@@ -142,12 +147,11 @@ var
   StartupChecked: Boolean;
   TasksPic, DonePic: TBitmapImage;
 
-// The snip screen picture for this screen's scale and Setup's light or dark look, made to
-// size by make_installer_art.py so it's never stretched
+// The snip screen picture for this screen's scale, made to size by make_installer_art.py
+// so it's never stretched
 function SnipPicture: String;
 var
   Pct: Integer;
-  Theme: String;
 begin
   Pct := ScaleX(100);
   if Pct < 113 then Pct := 100
@@ -155,8 +159,7 @@ begin
   else if Pct < 163 then Pct := 150
   else if Pct < 188 then Pct := 175
   else Pct := 200;
-  if IsDarkInstallMode then Theme := 'dark' else Theme := 'light';
-  Result := 'snip-' + Theme + '-' + IntToStr(Pct) + '.png';
+  Result := 'snip-light-' + IntToStr(Pct) + '.png';
   ExtractTemporaryFile(Result);
   Result := ExpandConstant('{tmp}\') + Result;
 end;

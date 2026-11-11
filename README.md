@@ -8,6 +8,10 @@ clipboard. That's all it does.
 - Freezes the screen first, so menus and tooltips stay put while you pick.
 - Works over fullscreen games and on every monitor, HDR included.
 
+<!-- release -->
+Version **1.0.2** · [VirusTotal: 71 of 71 clean](https://www.virustotal.com/gui/file/7f8c18023348e9ae3c2591e18983f0f434706986dc1ca41fd4668b195c84d098) · [latest release](https://github.com/Onion-Alien/onion-peel/releases/latest)
+<!-- /release -->
+
 ## Why
 
 Reason for creating this:
@@ -17,18 +21,16 @@ Reason for creating this:
 
 ## Install
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/install-dark.png">
-  <img src="docs/install-light.png" width="500" alt="The Onion Peel installer: a short description, a picture of the snip screen, a 'Start with Windows' checkbox, and Install and Cancel buttons">
-</picture>
+<img src="docs/install.png" width="500" alt="The Onion Peel installer: a short description, a picture of the snip screen, a 'Start with Windows' checkbox, and Install and Cancel buttons">
 
 Download `OnionPeelSetup.exe` from the [latest release](https://github.com/Onion-Alien/onion-peel/releases/latest)
 and run it. Choose whether Onion Peel should start with Windows and press **Install**.
 No admin rights needed.
 
 The installer isn't code-signed yet, so Windows SmartScreen may warn the first time: choose
-**More info**, then **Run anyway**. Each release lists the installer's SHA-256, so you can
-check the download with `Get-FileHash OnionPeelSetup.exe`, or build it yourself (below).
+**More info**, then **Run anyway**. Every release is scanned on VirusTotal (the link is at
+the top) and lists the installer's SHA-256, so you can check the download with
+`Get-FileHash OnionPeelSetup.exe`, or build it yourself (below).
 
 Onion Peel starts as soon as it's installed. If you untick **Start with Windows**, start it
 yourself after a restart: search the Start menu for **Onion Peel**.
@@ -74,7 +76,9 @@ cargo build --release
 ```
 
 The exe is `target/release/onion-peel.exe`. To build the installer too, run
-`powershell -File scripts/build-release.ps1` (needs Inno Setup 6.6 or newer). See
+`powershell -File scripts/build-release.ps1` (needs Inno Setup 6.7 or newer);
+`python scripts/vt_scan.py target/installer/OnionPeelSetup.exe` then scans it on VirusTotal
+(it needs a free API key; the script says where to put it). See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the self-test and the privacy checks.
 
 ## License
