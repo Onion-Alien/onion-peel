@@ -14,15 +14,20 @@ other key passes straight through and nothing is recorded.
 
 ## What it writes
 
+The program writes one thing: the snip, to the clipboard, when you take one. Nothing is
+ever saved to disk.
+
+Installing is done by `OnionPeelSetup.exe`, a standard [Inno Setup](https://jrsoftware.org/isinfo.php)
+installer built from [installer/OnionPeel.iss](installer/OnionPeel.iss). It writes:
+
 | Where | What |
 |---|---|
-| Clipboard | The snip, when you take one |
-| `%LOCALAPPDATA%\Programs\Onion Peel\onion-peel.exe` | The program |
+| `%LOCALAPPDATA%\Programs\Onion Peel` | The program and its uninstaller |
 | Start menu | "Onion Peel" and "Uninstall Onion Peel" |
-| `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\OnionPeel` | The Installed apps entry |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{62F5E021-5387-42F1-BB03-740C0ECFC44B}_is1` | The Installed apps entry |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `OnionPeel` | Only if it starts with Windows |
 
-Uninstalling removes all of these. Nothing is ever saved to disk besides the program.
+Uninstalling removes all of these.
 
 ## Reporting a problem
 

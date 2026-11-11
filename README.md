@@ -19,19 +19,19 @@ Reason for creating this:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/install-dark.png">
-  <img src="docs/install-light.png" width="440" alt="The Install Onion Peel window: a short description, a 'Start Onion Peel when Windows starts' checkbox, and Install and Cancel buttons">
+  <img src="docs/install-light.png" width="500" alt="The Onion Peel installer: a short description, a picture of the snip screen, a 'Start with Windows' checkbox, and Install and Cancel buttons">
 </picture>
 
-Download `onion-peel.exe` from the [latest release](https://github.com/Onion-Alien/onion-peel/releases/latest)
-and run it. A small window asks whether Onion Peel should start with Windows; press
-**Install**. No admin rights needed.
+Download `OnionPeelSetup.exe` from the [latest release](https://github.com/Onion-Alien/onion-peel/releases/latest)
+and run it. Choose whether Onion Peel should start with Windows and press **Install**.
+No admin rights needed.
 
-The exe isn't code-signed yet, so Windows SmartScreen may warn the first time: choose
-**More info**, then **Run anyway**. Each release lists the exe's SHA-256, so you can check
-the download with `Get-FileHash onion-peel.exe`, or build it yourself (below).
+The installer isn't code-signed yet, so Windows SmartScreen may warn the first time: choose
+**More info**, then **Run anyway**. Each release lists the installer's SHA-256, so you can
+check the download with `Get-FileHash OnionPeelSetup.exe`, or build it yourself (below).
 
-Onion Peel starts as soon as it's installed. If you untick **Start Onion Peel when Windows
-starts**, start it yourself after a restart: search the Start menu for **Onion Peel**.
+Onion Peel starts as soon as it's installed. If you untick **Start with Windows**, start it
+yourself after a restart: search the Start menu for **Onion Peel**.
 **Uninstall Onion Peel** is right there too (or use Settings > Apps > Installed apps).
 
 <picture>
@@ -39,7 +39,7 @@ starts**, start it yourself after a restart: search the Start menu for **Onion P
   <img src="docs/start-menu-light.png" width="560" alt="Windows Start menu search for 'onion peel': Onion Peel as the best match, and Uninstall Onion Peel under Apps">
 </picture>
 
-Running a newer `onion-peel.exe` updates it.
+Running a newer `OnionPeelSetup.exe` updates it.
 
 ## Use
 
@@ -73,8 +73,9 @@ Rust (stable) on Windows:
 cargo build --release
 ```
 
-The exe is `target/release/onion-peel.exe`. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for the self-test and the privacy checks.
+The exe is `target/release/onion-peel.exe`. To build the installer too, run
+`powershell -File scripts/build-release.ps1` (needs Inno Setup 6.6 or newer). See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the self-test and the privacy checks.
 
 ## License
 

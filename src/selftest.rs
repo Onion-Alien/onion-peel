@@ -11,7 +11,6 @@ use windows::Win32::Foundation::{POINT, RECT};
 
 use crate::capture;
 use crate::clip;
-use crate::dialog::{Dialog, Hit, Kind, Page};
 use crate::overlay::{self, Mode, Overlay};
 
 fn save_bmp(path: &str, w: i32, h: i32, bgra: &[u8]) {
@@ -118,47 +117,5 @@ pub fn run(dir: &str) {
     }
     let bar = o.bar;
     writeln!(log, "bar: {:?}", (bar.left, bar.top, bar.right - bar.left, bar.bottom - bar.top)).unwrap();
-    dialogs(dir, &mut log);
     std::fs::write(format!("{dir}/selftest.txt"), log).unwrap();
-}
-
-/// The install window: every page, dark and light, at 100% and 150%.
-fn dialogs(dir: &str, log: &mut String) {
-    let busy = || {
-        let mut p = Page::install_as(false, true);
-        p.busy = Some("Installing\u{2026}");
-        p
-    };
-    let failed = || {
-        let why = "Couldn't copy Onion Peel to %LOCALAPPDATA%\\Programs\\Onion Peel: The process cannot access the file \
-                   because it is being used by another process. (os error 32)";
-        Page::finished(Kind::Failed, "Couldn't install Onion Peel", why)
-    };
-    type Case<'a> = (&'a str, &'a dyn Fn() -> Page, Option<Hit>, Option<Hit>);
-    let pages: [Case; 10] = [
-        ("install", &|| Page::install_as(false, true), None, None),
-        ("install-hover", &|| Page::install_as(false, true), Some(Hit::Button(0)), None),
-        ("install-unticked-hover", &|| Page::install_as(false, false), Some(Hit::Check), None),
-        ("install-press-cancel", &|| Page::install_as(false, true), Some(Hit::Button(1)), Some(Hit::Button(1))),
-        ("installing", &busy, None, None),
-        ("update", &|| Page::install_as(true, false), None, None),
-        ("installed", &|| Page::installed(false), None, None),
-        ("uninstall", &Page::uninstall, Some(Hit::Button(1)), None),
-        ("uninstalled", &Page::uninstalled, None, None),
-        ("failed", &failed, None, None),
-    ];
-    for dark in [true, false] {
-        for dpi in [96, 144] {
-            for (name, page, hover, pressed) in &pages {
-                let mut d = Dialog::new(page(), dark, dpi).expect("dialog");
-                (d.hover, d.pressed) = (*hover, *pressed);
-                d.paint();
-                let theme = if dark { "dark" } else { "light" };
-                let file = format!("dialog-{theme}-{}-{name}", dpi * 100 / 96);
-                let b = &d.lay.buttons;
-                writeln!(log, "{file}: {}x{}, buttons {:?}", d.back.w, d.back.h, b.iter().map(|r| (r.left, r.top, r.right - r.left)).collect::<Vec<_>>()).unwrap();
-                save_bmp(&format!("{dir}/{file}.bmp"), d.back.w, d.back.h, d.back.pixels());
-            }
-        }
-    }
 }

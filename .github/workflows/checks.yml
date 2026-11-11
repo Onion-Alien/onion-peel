@@ -15,18 +15,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # the privacy checks read the whole history
+          # A PR's own head, never the merge commit GitHub makes to test it: that one is
+          # stamped in the account's time zone, and its id would land in this public log.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: No secrets or personal data, in the files and the history
         run: python scripts/check_sensitive.py --history
 
       - name: Commit times in UTC
         shell: bash
-        # The PR's own head, not the merge commit GitHub makes to test it (that one is
-        # stamped in the account's time zone, which is also why PRs here are never merged
-        # with GitHub's merge button: main is fast-forwarded instead).
-        run: sh scripts/checks/check_utc.sh "$HEAD"
-        env:
-          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        # (main is fast-forwarded, never merged with GitHub's button: GitHub's merge
+        # commits carry the account's time zone)
+        run: sh scripts/checks/check_utc.sh HEAD
 
       - name: Toolchain
         run: rustup component add clippy
@@ -44,3 +44,9 @@ jobs:
 
       - name: Self-test build
         run: cargo build --release --features selftest
+
+      - name: Installer
+        run: |
+          python -m pip install --quiet pillow
+          choco install innosetup -y --no-progress
+          powershell -File scripts/build-release.ps1

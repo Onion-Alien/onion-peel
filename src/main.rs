@@ -1,18 +1,15 @@
 //! Onion Peel: press Win+Shift+S, drag a box, it's on the clipboard. Nothing else.
-//! No window, no tray icon, no files, no history.
+//! No window, no tray icon, no files, no history. The installer (installer/OnionPeel.iss)
+//! puts it on the PC; this exe never installs itself.
 //!
-//!   onion-peel.exe              the install window, unless this is the installed copy
-//!   onion-peel.exe              (installed) run: from the Start menu, or when Windows starts
-//!   onion-peel.exe --uninstall  the uninstall window ("Uninstall Onion Peel" in the Start menu)
-//!   onion-peel.exe --quit       stop the running copy
+//!   onion-peel.exe              run: from the Start menu, or when Windows starts
+//!   onion-peel.exe --quit       stop the running copy (the installer uses it before an update)
 #![windows_subsystem = "windows"]
 
 mod capture;
 mod clip;
-mod dialog;
 mod dib;
 mod hook;
-mod install;
 mod overlay;
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -21,7 +18,7 @@ use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{CreateMutexW, OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -50,25 +47,30 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
     LRESULT(0)
 }
 
+/// Stop the running copy, if there is one, and wait until it has gone (so its exe is free).
+fn quit_running() {
+    unsafe {
+        let Ok(hwnd) = FindWindowExW(HWND_MESSAGE, HWND::default(), CLASS, PCWSTR::null()) else { return };
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, false, pid);
+        let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        if let Ok(p) = process {
+            WaitForSingleObject(p, 5000);
+            let _ = CloseHandle(p);
+        }
+    }
+}
+
 fn main() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("--quit") => return install::quit_running(),
-        Some("--uninstall") => {
-            if dialog::run(dialog::Page::uninstall()) == Some(dialog::Kind::Uninstalled) {
-                install::remove_leftovers();
-            }
-            return;
-        }
+        Some("--quit") => return quit_running(),
         #[cfg(feature = "selftest")]
         Some("--selftest") => return selftest::run(&args.next().unwrap_or(".".into())),
-        None if !install::is_installed_copy() => {
-            dialog::run(dialog::Page::install());
-            return;
-        }
         _ => {}
     }
 
