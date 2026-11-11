@@ -2,7 +2,7 @@
 # (target\installer\OnionPeelSetup.exe, the file that's published).
 # Rust keeps the source path of every panic message, and the paths of downloaded crates
 # contain this PC's user name; here they become neutral names. Then the exe and the
-# installer are checked for the user name and home folder.
+# installer are checked for the user name, the PC name and the home folder.
 #   powershell -File scripts/build-release.ps1 [extra cargo args]
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -21,7 +21,7 @@ try {
 $exe = Join-Path $root 'target\release\onion-peel.exe'
 $bytes = [IO.File]::ReadAllBytes($exe)
 $text = [Text.Encoding]::ASCII.GetString($bytes) + [Text.Encoding]::Unicode.GetString($bytes)
-$leaks = @($env:USERNAME, $HOME, $cargoHome, $root) | Where-Object { $_ -and $text.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }
+$leaks = @($env:USERNAME, $env:COMPUTERNAME, $HOME, $cargoHome, $root) | Where-Object { $_ -and $text.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }
 if ($leaks) { Write-Error "onion-peel.exe still contains: $($leaks -join ', ')" }
 
 # The installer (installer\OnionPeel.iss): its pictures are drawn first
@@ -36,7 +36,7 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $setup = Join-Path $root 'target\installer\OnionPeelSetup.exe'
 $bytes = [IO.File]::ReadAllBytes($setup)
 $text = [Text.Encoding]::ASCII.GetString($bytes) + [Text.Encoding]::Unicode.GetString($bytes)
-$leaks = @($env:USERNAME, $HOME, $root) | Where-Object { $_ -and $text.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }
+$leaks = @($env:USERNAME, $env:COMPUTERNAME, $HOME, $root) | Where-Object { $_ -and $text.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }
 if ($leaks) { Write-Error "OnionPeelSetup.exe still contains: $($leaks -join ', ')" }
 $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
 "$setup`nversion $version`nSHA-256 $hash`nno local paths inside"

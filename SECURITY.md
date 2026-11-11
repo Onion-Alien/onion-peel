@@ -10,7 +10,9 @@ counts, no update checks.
 The screen, only while you snip (DXGI Desktop Duplication, GDI as a fallback), and the
 list of visible windows (for Window mode). It watches the keyboard with a low-level
 hook for Win+Shift+S, and, while the snip screen is open, for Esc and 1, 2, 3; every
-other key passes straight through and nothing is recorded.
+other key passes straight through and nothing is recorded. While the snip screen is open
+and the Alt+Tab switcher is showing, it also watches the left mouse button, so a drag can
+snip the switcher; a plain click is handed on, and nothing is recorded there either.
 
 ## What it writes
 

@@ -12,7 +12,8 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a commit (v4), so a moved tag can't change what runs here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0 # the privacy checks read the whole history
           # A PR's own head, never the merge commit GitHub makes to test it: that one is
@@ -31,22 +32,23 @@ jobs:
       - name: Toolchain
         run: rustup component add clippy
 
+      # --locked: exactly the crate versions in Cargo.lock, or the step fails.
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Tests
-        run: cargo test
+        run: cargo test --locked
 
       - name: Clippy
         run: |
-          cargo clippy --all-targets -- -D warnings
-          cargo clippy --all-targets --features selftest -- -D warnings
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --features selftest -- -D warnings
 
       - name: Self-test build
-        run: cargo build --release --features selftest
+        run: cargo build --release --locked --features selftest
 
       - name: Installer
         run: |
           python -m pip install --quiet pillow
           choco install innosetup -y --no-progress
-          powershell -File scripts/build-release.ps1
+          powershell -File scripts/build-release.ps1 --locked

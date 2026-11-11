@@ -33,7 +33,7 @@ Commit times carry the committer's time zone, so every commit here is stamped in
 Build anything you'll share with `powershell -File scripts/build-release.ps1`, not plain
 `cargo build`. Rust keeps source paths in the exe, and the paths of downloaded crates
 contain your user name. The script maps them to neutral names and checks the exe for your
-user name and home folder. Then it builds the installer around it
+user name, PC name and home folder. Then it builds the installer around it
 (`target/installer/OnionPeelSetup.exe`, the file that's published), checks that too, and
 prints its SHA-256. It needs Python with Pillow and Inno Setup 6.6 or newer
 (`winget install JRSoftware.InnoSetup`).
